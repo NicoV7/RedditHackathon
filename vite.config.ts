@@ -105,6 +105,7 @@ function localApi(): Plugin {
 export default defineConfig({
   root: resolve(repoRoot, "src/client"),
   plugins: [jsToTs(), react(), localApi()],
-  server: { fs: { allow: [repoRoot] }, host: true },
+  server: { port: Number(process.env.PORT) || 3000, strictPort: false, host: true, fs: { allow: [repoRoot] } },
+  preview: { port: Number(process.env.PORT) || 3000, host: true },
   build: { outDir: resolve(repoRoot, "dist/client"), emptyOutDir: true },
 });
