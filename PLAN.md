@@ -7,6 +7,46 @@
 
 ---
 
+# Build status (implementation)
+
+> Snapshot as of 2026-06-24, branch `parlor-foundation`. The verified core runs locally; the Devvit deployment layer is the remaining work. **`npm test` → 31/31 green · `npm run typecheck` clean.**
+
+| Component | State | Notes |
+|---|---|---|
+| **C1** `Case` contract | ✅ verified | `src/shared/case.ts` (frozen) |
+| **C2** procedural generator | ✅ verified | template + per-player instances; deterministic |
+| **C3** validator + blind solver + corpus | ✅ verified | 100% on known-answer corpus; 200 instances solvable |
+| **C4** LLM provider + moderation | ✅ verified (interface) | `MockProvider` for offline/dev; **live Gemini/OpenAI fetch client ⬜ not yet wired** |
+| **C5** NPC harness | ✅ verified | server-authoritative; `killerId` never in a prompt (proven) |
+| **C6** Redis data layer | ✅ verified | `FakeRedis` + repos; leaderboard/streaks/state; ≤30-day TTL |
+| **C7** endpoints / scheduler | ⏳ partial | framework-agnostic handlers ✅ tested; **Devvit scheduler/HTTP adapter ⬜** |
+| **C8–C12** React shell, interrogation, board panel, resolution | ⏳ scaffolded | typechecked + serves under Vite; not yet exercised on real Reddit |
+| **C9/C10** Phaser board + living world | ⏳ scaffolded | tap-to-link board, integer-pure deterministic world; placeholder art |
+| **C13** assets | ⬜ placeholders | real Lamplight-Noir art via the asset MCP pipeline |
+| **C17** event log & metrics | ✅ verified | two-store; anonymized aggregates + daily snapshot |
+| **C18/C19** items + NPC memory | ◑ partial | item-clue channel live in endpoints; perception-gated memory model not yet wired into C5 |
+| **C14/C15/C16** UGC / evals / compliance | ⬜ deferred | per the tiers below |
+
+**Commits:** ground-truth docs → C1–C3 (Wave 0) → C4/C5 → C6/C17/e2e → C7 endpoints + `devvit.json` → C8–C13 client.
+
+**Devvit-runtime boundary (needs the `devvit` CLI + Reddit auth, absent in the build sandbox):** the Vite/esbuild → `dist/` build for Devvit, the `@devvit/web/server` HTTP + scheduler adapter that injects real Redis + the LLM secret onto `createHandlers`, the live Gemini/OpenAI clients, and real assets. The handlers and client are ready to plug into that adapter.
+
+# How to run
+
+**Local test-run (no Devvit, offline mock LLM):**
+```bash
+npm install
+npm run dev        # Vite serves the client AND mounts /api/* via in-process middleware
+# open the printed http://localhost:5173
+```
+This runs the real game loop — generate → interrogate → examine → tag/accuse → score → "Parlor Wrapped" summary — backed by `FakeRedis` (in-memory, resets on restart) and the offline `MockProvider` (NPC lines are placeholders; the clue/deduction/scoring logic is fully real and server-authoritative). Wiring is in `vite.config.ts`.
+
+**Checks:** `npm test` (31 tests) · `npm run typecheck`.
+
+**Real Devvit deploy (later, in a Devvit-enabled environment):** add the build + `@devvit/web` adapter (see the Devvit-runtime boundary above), then `devvit login` → `devvit playtest <your-test-subreddit>`. Config is in `devvit.json`.
+
+---
+
 # L1 — General Design Overview (the vision)
 
 ## What Parlor is

@@ -8,9 +8,23 @@ assemble everything on an interactive **Deduction Board**, and name the killer. 
 **uniquely randomized — but provably solvable — instance** of the day's case, so the community can
 trade hints and methods without ever spoiling the answer.
 
-> **Status:** design complete, build in progress. The authoritative design lives in
-> **[`PLAN.md`](./PLAN.md)** (the north-star) with the agent rules in **[`CLAUDE.md`](./CLAUDE.md)**
-> and platform limits in **[`docs/devvit-constraints.md`](./docs/devvit-constraints.md)**.
+> **Status:** verified core runs locally; Devvit deployment layer pending. The full game loop
+> (generate → interrogate → examine → deduce → accuse → score) is playable via `npm run dev`,
+> backed by 31 passing tests. See **[`PLAN.md`](./PLAN.md)** → *Build status* for the component
+> matrix, plus the agent rules in **[`CLAUDE.md`](./CLAUDE.md)** and platform limits in
+> **[`docs/devvit-constraints.md`](./docs/devvit-constraints.md)**.
+
+## Run locally (no Devvit needed)
+
+```bash
+npm install
+npm run dev        # http://localhost:5173 — Vite serves the client + mounts /api/* in-process
+npm test           # 31 tests · npm run typecheck for types
+```
+
+The local runner (`vite.config.ts`) backs the API with an in-memory `FakeRedis` and an offline
+mock LLM, so NPC dialogue is placeholder text while the clue/deduction/scoring logic is fully real
+and server-authoritative. The real Reddit deploy uses `devvit.json` + the Devvit toolchain.
 
 ## Tech direction (summary)
 

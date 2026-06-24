@@ -32,11 +32,10 @@ const noopBridge: PhaserBridge = {
 
 async function resolveBridge(): Promise<PhaserBridge> {
   try {
-    // The phaser/ workstream exports a concrete bridge as `bridge`. Use a
-    // computed specifier so this React-layer module never statically depends on
-    // the Phaser implementation (which lives in a separate workstream).
-    const spec = "./phaser/index.js";
-    const mod = (await import(/* @vite-ignore */ spec)) as { bridge?: PhaserBridge };
+    // The phaser/ workstream exports a concrete bridge as `bridge`. A literal
+    // specifier lets Vite resolve + serve the Phaser implementation (a computed
+    // specifier would silently fall back to the no-op bridge below).
+    const mod = (await import("./phaser/index.js")) as { bridge?: PhaserBridge };
     return mod.bridge ?? noopBridge;
   } catch {
     return noopBridge;
