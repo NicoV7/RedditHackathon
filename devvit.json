@@ -1,0 +1,29 @@
+{
+  "$schema": "https://developers.reddit.com/schema/config-file.v1.json",
+  "name": "parlor",
+  "permissions": {
+    "redis": true,
+    "http": {
+      "enabled": true,
+      "domains": ["generativelanguage.googleapis.com", "api.openai.com"]
+    },
+    "reddit": { "asUser": ["SUBMIT_POST", "SUBMIT_COMMENT"] }
+  },
+  "post": {
+    "dir": "dist/client",
+    "entrypoints": { "default": { "entry": "index.html" } }
+  },
+  "server": { "dir": "dist/server", "entry": "index.js" },
+  "scheduler": {
+    "tasks": {
+      "daily-case": { "cron": "0 12 * * *", "endpoint": "/internal/scheduler/daily-case" }
+    }
+  },
+  "settings": {
+    "global": {
+      "PARLOR_LLM_PROVIDER": { "type": "string", "label": "LLM provider (gemini|openai)", "isSecret": false },
+      "PARLOR_LLM_KEY": { "type": "string", "label": "LLM API key", "isSecret": true }
+    }
+  },
+  "_comment": "Realtime permission intentionally omitted (co-op is stretch). Wired structure; verify against the Devvit MCP + CLI in a Devvit-enabled environment."
+}
