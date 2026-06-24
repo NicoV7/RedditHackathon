@@ -27,6 +27,7 @@ import { Interrogation, type InterrogationLine } from "./ui/Interrogation.js";
 import { BoardPanel } from "./ui/BoardPanel.js";
 import { Resolution } from "./ui/Resolution.js";
 import { noir, font } from "./ui/theme.js";
+import { useScreenTransition, TransitionVeil } from "./ui/transitions.js";
 
 export interface AppProps {
   bridge: PhaserBridge;
@@ -43,6 +44,9 @@ interface DialogueMemory {
 
 export function App({ bridge, dailySeed: seedProp }: AppProps): React.JSX.Element {
   const [state, dispatch] = useReducer(reducer, initialState);
+  // `displayed` lags `state` across phase changes so the screen (and its Phaser
+  // canvas) swaps UNDER the transition veil; within a phase it mirrors live state.
+  const { displayed, veil } = useScreenTransition(state);
   const [thinking, setThinking] = useState(false);
   const dialogueRef = useRef<Record<string, DialogueMemory>>({});
 
@@ -69,11 +73,16 @@ export function App({ bridge, dailySeed: seedProp }: AppProps): React.JSX.Elemen
     };
   }, [dailySeed]);
 
-  // ── mount/unmount the living-world scene for explore/dialogue phases ──
+  // ── mount/unmount the living-world scene for the Exploring + Dialogue phases ──
+  //    The world host div lives in a PERSISTENT layer (see render) that stays in
+  //    the DOM across BOTH phases — hidden behind the dialogue, never unmounted —
+  //    so the Phaser scene is not torn down on the chat round-trip. That keeps its
+  //    integer tick / NPC positions / camera alive (a stateful overworld). The
+  //    scene is only destroyed when we leave the world entirely (Board/Resolved).
   useEffect(() => {
-    const inWorld = state.phase === "Exploring" || state.phase === "Dialogue";
+    const inWorld = displayed.phase === "Exploring" || displayed.phase === "Dialogue";
     if (inWorld && worldHostRef.current && !worldHandle.current) {
-      worldHandle.current = bridge.mountWorld(worldHostRef.current, state.view, {
+      worldHandle.current = bridge.mountWorld(worldHostRef.current, displayed.view, {
         onApproachNpc: (npcId) => dispatch({ type: "ENTER_DIALOGUE", npcId }),
         onExamineItem: (itemId) => void examine(itemId),
       });
@@ -83,12 +92,12 @@ export function App({ bridge, dailySeed: seedProp }: AppProps): React.JSX.Elemen
       worldHandle.current = null;
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [state.phase]);
+  }, [displayed.phase]);
 
   // ── mount/unmount the deduction board for the Board phase ──
   useEffect(() => {
-    if (state.phase === "Board" && boardHostRef.current && !boardHandle.current) {
-      const data = state;
+    if (displayed.phase === "Board" && boardHostRef.current && !boardHandle.current) {
+      const data = displayed;
       const cards: BoardCard[] = [
         ...data.view.npcs.map<BoardCard>((n) => ({ id: n.id, label: n.name, kind: "npc" })),
         ...data.clues.map<BoardCard>((c) => ({ id: c.id, label: c.text, kind: "clue" })),
@@ -105,20 +114,20 @@ export function App({ bridge, dailySeed: seedProp }: AppProps): React.JSX.Elemen
         boardHandle.current.setStrength(n.id, deductionStrength(data, n.id));
       }
     }
-    if (state.phase !== "Board" && boardHandle.current) {
+    if (displayed.phase !== "Board" && boardHandle.current) {
       boardHandle.current.destroy();
       boardHandle.current = null;
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [state.phase]);
+  }, [displayed.phase]);
 
   // ── push live deduction-strength meters to the board when tags/clues change ──
   useEffect(() => {
-    if (state.phase !== "Board" || !boardHandle.current) return;
-    for (const n of state.view.npcs) {
-      boardHandle.current.setStrength(n.id, deductionStrength(state, n.id));
+    if (displayed.phase !== "Board" || !boardHandle.current) return;
+    for (const n of displayed.view.npcs) {
+      boardHandle.current.setStrength(n.id, deductionStrength(displayed, n.id));
     }
-  }, [state]);
+  }, [displayed]);
 
   // ── tear everything down on unmount ──
   useEffect(() => {
@@ -211,92 +220,90 @@ export function App({ bridge, dailySeed: seedProp }: AppProps): React.JSX.Elemen
     [dailySeed],
   );
 
-  // ── render by phase ──
-  if (state.phase === "Loading") {
-    return (
-      <Shell>
-        <div style={center}>
-          {state.error ? (
-            <span style={{ color: noir.crimson }}>Couldn't open the parlor. {state.error}</span>
-          ) : (
-            <span style={{ color: noir.amber }}>Opening the parlor…</span>
-          )}
-        </div>
-      </Shell>
-    );
-  }
-
-  if (state.phase === "Briefing") {
-    return (
-      <Shell>
-        <Briefing view={state.view} onStart={() => dispatch({ type: "START_INTERROGATING" })} />
-      </Shell>
-    );
-  }
-
-  if (state.phase === "Resolved") {
-    return (
-      <Shell>
-        <Resolution result={state.result} dailySeed={dailySeed} />
-      </Shell>
-    );
-  }
-
-  if (state.phase === "Dialogue") {
-    const npc = state.view.npcs.find((n) => n.id === state.npcId);
-    const mem = ensureMem(dialogueRef.current, state.npcId);
-    return (
-      <Shell>
-        {npc ? (
-          <Interrogation
-            npc={npc}
-            transcript={mem.transcript}
-            clues={state.clues}
-            freshClueIds={mem.freshClueIds}
-            askedChips={mem.askedChips}
-            thinking={thinking}
-            onAsk={(m) => void ask(state.npcId, m)}
-            onBack={() => dispatch({ type: "EXIT_DIALOGUE" })}
-          />
+  // ── render the displayed screen (it lags `state` across phase changes so the
+  //    swap happens under the transition veil; within a phase it mirrors live state) ──
+  let content: React.JSX.Element | null;
+  if (displayed.phase === "Loading") {
+    content = (
+      <div style={center}>
+        {displayed.error ? (
+          <span style={{ color: noir.crimson }}>Couldn't open the parlor. {displayed.error}</span>
         ) : (
-          <div style={center}>NPC not found.</div>
+          <span style={{ color: noir.amber }}>Opening the parlor…</span>
         )}
-      </Shell>
-    );
-  }
-
-  if (state.phase === "Board" || state.phase === "Accusing") {
-    return (
-      <Shell>
-        <BoardPanel
-          data={state as GameData}
-          boardHostRef={boardHostRef}
-          onTag={tag}
-          onClose={() => dispatch({ type: "CLOSE_BOARD" })}
-          onAccuse={(npcId) => void accuse(npcId)}
-        />
-      </Shell>
-    );
-  }
-
-  // Exploring
-  return (
-    <Shell>
-      <div style={exploreScreen}>
-        <div ref={worldHostRef} style={worldHost} />
-        <nav style={exploreNav}>
-          <span style={exploreHint}>Tap a guest to interrogate. Examine what's left behind.</span>
-          <button
-            type="button"
-            disabled={!state.boardUnlocked}
-            style={{ ...boardBtn, ...(state.boardUnlocked ? null : boardBtnLocked) }}
-            onClick={() => dispatch({ type: "OPEN_BOARD" })}
-          >
-            {state.boardUnlocked ? "Open the board" : "Board (find a clue first)"}
-          </button>
-        </nav>
       </div>
-    </Shell>
+    );
+  } else if (displayed.phase === "Briefing") {
+    content = (
+      <Briefing view={displayed.view} onStart={() => dispatch({ type: "START_INTERROGATING" })} />
+    );
+  } else if (displayed.phase === "Resolved") {
+    content = <Resolution result={displayed.result} dailySeed={dailySeed} />;
+  } else if (displayed.phase === "Dialogue") {
+    const npc = displayed.view.npcs.find((n) => n.id === displayed.npcId);
+    const mem = ensureMem(dialogueRef.current, displayed.npcId);
+    const npcId = displayed.npcId;
+    content = npc ? (
+      <Interrogation
+        npc={npc}
+        transcript={mem.transcript}
+        clues={displayed.clues}
+        freshClueIds={mem.freshClueIds}
+        askedChips={mem.askedChips}
+        thinking={thinking}
+        onAsk={(m) => void ask(npcId, m)}
+        onBack={() => dispatch({ type: "EXIT_DIALOGUE" })}
+      />
+    ) : (
+      <div style={center}>NPC not found.</div>
+    );
+  } else if (displayed.phase === "Board" || displayed.phase === "Accusing") {
+    content = (
+      <BoardPanel
+        data={displayed as GameData}
+        boardHostRef={boardHostRef}
+        onTag={tag}
+        onClose={() => dispatch({ type: "CLOSE_BOARD" })}
+        onAccuse={(npcId) => void accuse(npcId)}
+      />
+    );
+  } else {
+    // Exploring — rendered by the persistent world layer below (not here), so the
+    // Phaser canvas is never inside the keyed wrapper that re-mounts per phase.
+    content = null;
+  }
+
+  const worldVisible = displayed.phase === "Exploring";
+  return (
+    <div style={shell}>
+      {/* Persistent living-world layer — present across BOTH Exploring and Dialogue
+          so the Phaser scene (integer tick / NPC positions / camera) survives the
+          chat round-trip. During Dialogue it is HIDDEN (not unmounted) behind the
+          opaque dialogue, keeping its state; it is torn down only when we leave the
+          world entirely. The nav lives here too so it travels with the world. */}
+      {(displayed.phase === "Exploring" || displayed.phase === "Dialogue") && (
+        <div style={worldVisible ? worldLayer : worldLayerHidden}>
+          <div ref={worldHostRef} style={worldHost} />
+          <nav style={exploreNav}>
+            <span style={exploreHint}>Tap a guest to interrogate. Examine what's left behind.</span>
+            <button
+              type="button"
+              disabled={!displayed.boardUnlocked}
+              style={{ ...boardBtn, ...(displayed.boardUnlocked ? null : boardBtnLocked) }}
+              onClick={() => dispatch({ type: "OPEN_BOARD" })}
+            >
+              {displayed.boardUnlocked ? "Open the board" : "Board (find a clue first)"}
+            </button>
+          </nav>
+        </div>
+      )}
+      {/* keyed so each screen change re-triggers the `parlorRise` enter animation;
+          Exploring renders null here (the persistent world layer above is its screen) */}
+      <div key={displayed.phase} className="parlor-screen">
+        {content}
+      </div>
+      <TransitionVeil veil={veil} />
+    </div>
   );
 }
 
@@ -312,10 +319,6 @@ function ensureMem(store: Record<string, DialogueMemory>, npcId: string): Dialog
 
 function caseIdOf(s: GameState): string {
   return s.phase === "Loading" ? "" : s.view.caseId;
-}
-
-function Shell({ children }: { children: React.ReactNode }): React.JSX.Element {
-  return <div style={shell}>{children}</div>;
 }
 
 const shell: React.CSSProperties = {
@@ -335,10 +338,22 @@ const center: React.CSSProperties = {
   padding: 24,
   fontSize: 18,
 };
-const exploreScreen: React.CSSProperties = {
-  height: "100%",
+// The persistent world layer fills the shell and stacks under the keyed screen
+// wrapper. It is `position:absolute` so it overlaps (rather than stacks below)
+// the in-flow screen wrapper; during Exploring it paints on top and owns input.
+const worldLayer: React.CSSProperties = {
+  position: "absolute",
+  inset: 0,
   display: "flex",
   flexDirection: "column",
+};
+// Dialogue: hide (don't unmount) the world. `visibility:hidden` keeps the layout
+// size so Phaser's FIT scaler doesn't recompute to 0; `pointerEvents:none` lets
+// the dialogue beneath it own all input.
+const worldLayerHidden: React.CSSProperties = {
+  ...worldLayer,
+  visibility: "hidden",
+  pointerEvents: "none",
 };
 const worldHost: React.CSSProperties = { flex: 1, minHeight: 0, background: noir.ink };
 const exploreNav: React.CSSProperties = {

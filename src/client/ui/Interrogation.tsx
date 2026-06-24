@@ -1,15 +1,20 @@
 /**
- * src/client/ui/Interrogation.tsx — the dialogue screen.
- * Question chips + bounded free-text → ≤2-sentence NPC replies. Revealed clues
- * animate into a "clue collected" list; asked chips gray out; an in-character
- * "…thinking" state shows during the await.
+ * src/client/ui/Interrogation.tsx — the dialogue stage (Cold Lovecraftian Noir).
  *
- * This component is presentational + local input state only. The actual fetch
- * and FSM dispatch are owned by App.tsx (passed in as onAsk).
+ * Disco-Elysium two-panel layout: the suspect's PixelLab PORTRAIT on the LEFT
+ * (the face is the focus + where a future lie-tell will live), the conversation
+ * on the RIGHT — running transcript, an in-character "…thinking" state, collected
+ * clues, question chips (asked chips gray out), and a bounded free-text input
+ * (≤140 chars, moderated server-side — the in-app content-rule guardrail).
+ *
+ * Presentational + local input state only; the fetch + FSM dispatch live in
+ * App.tsx (passed in as onAsk). On a narrow viewport the portrait reflows to a
+ * cropped top band over the dialogue.
  */
 import { useMemo, useState } from "react";
 import type { ClientNpcView, RevealedClue } from "../../shared/api.js";
 import { noir, font } from "./theme.js";
+import { portraitFor } from "./portraits.js";
 
 const MAX_INPUT = 140; // bounded free-text (no unbounded input — compliance)
 
@@ -28,15 +33,10 @@ export interface InterrogationLine {
 
 export interface InterrogationProps {
   npc: ClientNpcView;
-  /** transcript so far for this NPC */
   transcript: InterrogationLine[];
-  /** clues revealed across the whole case (for the collected list) */
   clues: RevealedClue[];
-  /** ids freshly revealed this dialogue, for the "collected" animation */
   freshClueIds: string[];
-  /** chip prompts already asked this session (grayed out) */
   askedChips: string[];
-  /** true while awaiting the server reply */
   thinking: boolean;
   onAsk: (message: string) => void;
   onBack: () => void;
@@ -48,6 +48,7 @@ export function Interrogation(props: InterrogationProps): React.JSX.Element {
 
   const chips = useMemo(() => DEFAULT_CHIPS, []);
   const fresh = useMemo(() => new Set(freshClueIds), [freshClueIds]);
+  const portrait = useMemo(() => portraitFor(npc.name), [npc.name]);
 
   function ask(message: string): void {
     const m = message.trim();
@@ -58,94 +59,99 @@ export function Interrogation(props: InterrogationProps): React.JSX.Element {
 
   return (
     <div style={styles.screen}>
-      <header style={styles.header}>
+      {/* LEFT — portrait stage */}
+      <aside style={styles.portrait}>
+        <img src={portrait} alt={npc.name} style={styles.sprite} />
+        <div style={styles.fog} />
         <button type="button" style={styles.back} onClick={props.onBack}>
-          ‹ Back
+          ‹ leave
         </button>
-        <div style={styles.who}>
+        <div style={styles.plate}>
           <div style={styles.npcName}>{npc.name}</div>
           <div style={styles.npcVoice}>{npc.blurb}</div>
         </div>
-      </header>
+      </aside>
 
-      <div style={styles.body}>
+      {/* RIGHT — dialogue */}
+      <section style={styles.talk}>
         <div style={styles.transcript}>
+          {transcript.length === 0 && (
+            <div style={styles.opening}>
+              <em>{npc.name} regards you, waiting. ({npc.voice})</em>
+            </div>
+          )}
           {transcript.map((line, i) => (
             <div
               key={i}
-              style={line.speaker === "you" ? styles.bubbleYou : styles.bubbleNpc}
+              style={line.speaker === "you" ? styles.lineYou : styles.lineNpc}
             >
               {line.text}
             </div>
           ))}
           {thinking && (
-            <div style={{ ...styles.bubbleNpc, ...styles.thinking }}>
+            <div style={{ ...styles.lineNpc, ...styles.thinking }}>
               <em>{npc.name} considers the question…</em>
             </div>
           )}
         </div>
 
-        <aside style={styles.clueRail} aria-label="Clues collected">
-          <div style={styles.clueTitle}>Clues collected</div>
-          {clues.length === 0 && (
-            <div style={styles.clueEmpty}>No clues yet. Keep pressing.</div>
-          )}
-          <ul style={styles.clueList}>
+        {clues.length > 0 && (
+          <div style={styles.clueRail} aria-label="Clues collected">
             {clues.map((c) => (
-              <li
+              <span
                 key={c.id}
                 style={{
-                  ...styles.clueItem,
-                  ...(fresh.has(c.id) ? styles.clueItemFresh : null),
+                  ...styles.clueChip,
+                  ...(fresh.has(c.id) ? styles.clueChipFresh : null),
                 }}
               >
                 {c.text}
-              </li>
+              </span>
             ))}
-          </ul>
-        </aside>
-      </div>
+          </div>
+        )}
 
-      <div style={styles.chips}>
-        {chips.map((c) => {
-          const used = askedChips.includes(c);
-          return (
-            <button
-              key={c}
-              type="button"
-              disabled={used || thinking}
-              style={{ ...styles.chip, ...(used ? styles.chipUsed : null) }}
-              onClick={() => ask(c)}
-            >
-              {c}
-            </button>
-          );
-        })}
-      </div>
+        <div style={styles.chips}>
+          {chips.map((c) => {
+            const used = askedChips.includes(c);
+            return (
+              <button
+                key={c}
+                type="button"
+                disabled={used || thinking}
+                style={{ ...styles.chip, ...(used ? styles.chipUsed : null) }}
+                onClick={() => ask(c)}
+              >
+                {c}
+              </button>
+            );
+          })}
+        </div>
 
-      <form
-        style={styles.inputRow}
-        onSubmit={(e) => {
-          e.preventDefault();
-          ask(draft);
-        }}
-      >
-        <input
-          style={styles.input}
-          value={draft}
-          maxLength={MAX_INPUT}
-          placeholder="Ask in your own words…"
-          onChange={(e) => setDraft(e.target.value.slice(0, MAX_INPUT))}
-          disabled={thinking}
-        />
-        <button
-          type="submit"
-          style={styles.send}
-          disabled={thinking || draft.trim().length === 0}
+        <form
+          style={styles.inputRow}
+          onSubmit={(e) => {
+            e.preventDefault();
+            ask(draft);
+          }}
         >
-          Ask
-        </button>
-      </form>
+          <input
+            style={styles.input}
+            value={draft}
+            maxLength={MAX_INPUT}
+            placeholder="Press them in your own words…"
+            onChange={(e) => setDraft(e.target.value.slice(0, MAX_INPUT))}
+            disabled={thinking}
+          />
+          <button
+            type="submit"
+            style={styles.send}
+            disabled={thinking || draft.trim().length === 0}
+          >
+            Ask
+          </button>
+        </form>
+      </section>
     </div>
   );
 }
@@ -154,123 +160,122 @@ const styles: Record<string, React.CSSProperties> = {
   screen: {
     height: "100%",
     display: "flex",
-    flexDirection: "column",
-    background: noir.room,
+    background:
+      "radial-gradient(140% 120% at 50% -10%, #15343a 0%, #0a2026 30%, #051419 60%, #04080b 100%)",
     color: noir.paper,
     fontFamily: font,
+    overflow: "hidden",
   },
-  header: {
-    display: "flex",
-    alignItems: "center",
-    gap: 12,
-    padding: "12px 16px",
-    borderBottom: `1px solid ${noir.ink}`,
+  // ── portrait ──
+  portrait: {
+    width: "42%",
+    maxWidth: 460,
+    position: "relative",
+    overflow: "hidden",
+    borderRight: `1px solid #14282c`,
+    background:
+      "radial-gradient(60% 56% at 50% 40%, rgba(120,170,160,.16), transparent 62%)",
+    flex: "0 0 auto",
+  },
+  sprite: {
+    position: "absolute",
+    left: "50%",
+    bottom: 0,
+    transform: "translateX(-50%)",
+    height: "99%",
+    imageRendering: "pixelated",
+    filter: "drop-shadow(0 6px 18px rgba(0,0,0,.55))",
+  },
+  fog: {
+    position: "absolute",
+    inset: 0,
+    pointerEvents: "none",
+    background:
+      "linear-gradient(180deg, transparent 52%, rgba(5,18,22,.5) 80%, rgba(4,14,18,.92))",
   },
   back: {
-    background: "transparent",
+    position: "absolute",
+    top: 12,
+    left: 12,
+    background: "rgba(4,8,10,.5)",
     color: noir.amber,
     border: "none",
-    fontSize: 16,
+    borderRadius: 8,
+    padding: "6px 10px",
+    fontSize: 14,
     cursor: "pointer",
     fontFamily: font,
+    zIndex: 3,
   },
-  who: { lineHeight: 1.2 },
-  npcName: { fontSize: 18, fontWeight: 700, color: noir.amber },
-  npcVoice: { fontSize: 12, color: noir.paperDim },
-  body: { flex: 1, display: "flex", gap: 12, padding: 16, overflow: "hidden" },
+  plate: { position: "absolute", left: 0, right: 0, bottom: 0, padding: "14px 16px", zIndex: 2 },
+  npcName: { fontSize: 23, fontWeight: 700, color: "#e3efe8" },
+  npcVoice: { fontSize: 12.5, color: noir.paperDim, fontStyle: "italic", marginTop: 3, lineHeight: 1.35 },
+  // ── dialogue ──
+  talk: { flex: 1, display: "flex", flexDirection: "column", padding: "20px 24px 16px", minWidth: 0 },
   transcript: {
     flex: 1,
     display: "flex",
     flexDirection: "column",
-    gap: 8,
+    gap: 10,
     overflowY: "auto",
-    minWidth: 0,
+    minHeight: 0,
+    justifyContent: "flex-end",
   },
-  bubbleYou: {
-    alignSelf: "flex-end",
-    maxWidth: "85%",
-    background: noir.amber,
-    color: noir.ink,
-    padding: "8px 12px",
-    borderRadius: "12px 12px 2px 12px",
-    fontSize: 15,
-  },
-  bubbleNpc: {
+  opening: { color: noir.paperDim, fontSize: 15, lineHeight: 1.5 },
+  lineYou: { alignSelf: "flex-end", maxWidth: "88%", color: "#9fb1ad", fontSize: 15, lineHeight: 1.5 },
+  lineNpc: {
     alignSelf: "flex-start",
-    maxWidth: "85%",
-    background: noir.ink,
-    color: noir.paper,
-    padding: "8px 12px",
-    borderRadius: "12px 12px 12px 2px",
-    fontSize: 15,
+    maxWidth: "92%",
+    color: "#eef4ee",
+    fontSize: 18,
+    lineHeight: 1.55,
   },
-  thinking: { opacity: 0.7, fontStyle: "italic" },
-  clueRail: {
-    width: 168,
-    flex: "0 0 auto",
-    background: "rgba(233,222,201,0.06)",
-    borderRadius: 10,
-    padding: 10,
-    overflowY: "auto",
-  },
-  clueTitle: { fontSize: 12, letterSpacing: 1, color: noir.amber, marginBottom: 8 },
-  clueEmpty: { fontSize: 12, color: noir.paperDim },
-  clueList: { listStyle: "none", margin: 0, padding: 0, display: "grid", gap: 6 },
-  clueItem: {
+  thinking: { opacity: 0.7 },
+  clueRail: { display: "flex", flexWrap: "wrap", gap: 6, margin: "12px 0 4px" },
+  clueChip: {
     fontSize: 12,
-    lineHeight: 1.3,
-    background: noir.paper,
-    color: noir.ink,
-    padding: "6px 8px",
+    color: noir.paper,
+    background: "rgba(120,170,160,.08)",
+    border: `1px solid #2c4a44`,
     borderRadius: 6,
-    borderLeft: `3px solid ${noir.paperDim}`,
+    padding: "5px 9px",
   },
-  clueItemFresh: {
-    borderLeft: `3px solid ${noir.crimson}`,
-    boxShadow: `0 0 0 2px ${noir.crimson}33`,
-  },
-  chips: {
-    display: "flex",
-    gap: 8,
-    overflowX: "auto",
-    padding: "8px 16px",
-    borderTop: `1px solid ${noir.ink}`,
-  },
+  clueChipFresh: { borderColor: noir.crimson, boxShadow: `0 0 0 1px ${noir.crimson}55` },
+  chips: { display: "flex", flexWrap: "wrap", gap: 8, margin: "14px 0 10px" },
   chip: {
-    flex: "0 0 auto",
-    background: noir.paper,
-    color: noir.ink,
-    border: "none",
-    borderRadius: 999,
-    padding: "10px 14px",
-    fontSize: 13,
-    cursor: "pointer",
     fontFamily: font,
-    minHeight: 40,
+    fontSize: 12.5,
+    color: "#cfe0d8",
+    background: "transparent",
+    border: `1px solid #2c4a44`,
+    borderRadius: 999,
+    padding: "8px 13px",
+    cursor: "pointer",
+    minHeight: 38,
   },
-  chipUsed: { background: noir.paperDim, color: "#7a7160", opacity: 0.55, cursor: "default" },
-  inputRow: { display: "flex", gap: 8, padding: "8px 16px 16px" },
+  chipUsed: { color: "#5d7068", borderColor: "#1c302c", cursor: "default" },
+  inputRow: { display: "flex", gap: 8 },
   input: {
     flex: 1,
-    padding: "12px 14px",
-    borderRadius: 10,
-    border: `1px solid ${noir.amber}`,
-    background: noir.ink,
+    background: "rgba(3,12,14,.7)",
+    border: `1px solid #234039`,
     color: noir.paper,
-    fontSize: 15,
     fontFamily: font,
+    fontSize: 15,
+    padding: "12px 14px",
+    borderRadius: 8,
     minWidth: 0,
   },
   send: {
     background: noir.amber,
-    color: noir.ink,
+    color: "#08181a",
     border: "none",
-    borderRadius: 10,
+    borderRadius: 8,
     padding: "0 18px",
     fontSize: 15,
     fontWeight: 700,
     cursor: "pointer",
     fontFamily: font,
-    minHeight: 48,
+    minHeight: 46,
   },
 };

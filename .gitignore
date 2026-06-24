@@ -34,3 +34,8 @@ Thumbs.db
 # Test / coverage
 coverage/
 .nyc_output/
+.gstack/
+
+# Build / transfer artifacts (cloud-build drops — regenerated, never source)
+*.bundle
+*.tgz

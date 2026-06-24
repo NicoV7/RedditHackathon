@@ -11,13 +11,38 @@
       #root {
         margin: 0;
         height: 100%;
-        background: #1b2a2e;
-        color: #e9dec9;
+        background: #070b0f; /* Cold Lovecraftian Noir — abyss (matches theme.ts noir.ink) */
+        color: #cbd2cc;
         -webkit-font-smoothing: antialiased;
         overscroll-behavior: none;
       }
       * {
         box-sizing: border-box;
+      }
+      /* Screen-enter animation: each screen rises in as the transition veil clears. */
+      @keyframes parlorRise {
+        from {
+          opacity: 0;
+          transform: translateY(10px);
+        }
+        to {
+          opacity: 1;
+          transform: none;
+        }
+      }
+      .parlor-screen {
+        height: 100%;
+        animation: parlorRise 280ms cubic-bezier(0.2, 0.7, 0.2, 1) both;
+      }
+      /* Accessibility: honor reduced-motion — no rise, no veil fade (instant cuts). */
+      @media (prefers-reduced-motion: reduce) {
+        .parlor-screen {
+          animation: none !important;
+        }
+        .parlor-veil {
+          transition: none !important;
+          opacity: 0 !important;
+        }
       }
     </style>
   </head>

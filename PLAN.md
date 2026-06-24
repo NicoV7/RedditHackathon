@@ -31,6 +31,33 @@
 
 **Devvit-runtime boundary (needs the `devvit` CLI + Reddit auth, absent in the build sandbox):** the Vite/esbuild → `dist/` build for Devvit, the `@devvit/web/server` HTTP + scheduler adapter that injects real Redis + the LLM secret onto `createHandlers`, the live Gemini/OpenAI clients, and real assets. The handlers and client are ready to plug into that adapter.
 
+# ART & CAST UPDATE — 2026-06-24 (locked via /office-hours + /design-shotgun)
+
+> **This supersedes the older "Lamplight Noir / occult-in-story-only" art locks** (§Visual identity art-direction, Appendix D). Where they conflict, THIS governs. The palette-agnostic legibility/signature *rules* still hold (red-string signature, tell-legibility, progressive disclosure).
+
+## Art direction: "Cold Lovecraftian Noir" + PIXEL ART
+- **Palette (cold):** abyss `#070B0F` · cold slate `#16242C` · pale cold key-light `#BFD2CA` (the one key light is now COLD — moonlight/gaslight-wrong, not warm amber) · desaturated witch-green atmosphere `#4E7A63` · bone-ash UI `#CBD2CC`. **Crimson `#D4322A` stays the ONLY saturated color** (red string + lie-tell).
+- **Lovecraft is the SKIN; the whodunnit skeleton stays grounded-solvable** (never "a god did it"). North star: the indie game *The Dark Rites of Arkham*.
+
+## Asset pipeline (C13 revised): pixel art, 2-model split
+- **Hero (conversation portraits + UI):** **PixelLab** high-def sprites — **160×256 portrait, transparent** so they fill the left dialogue panel (API `POST api.pixellab.ai/v1/generate-image-pixflux` with `no_background` + `coverage_percentage`, also wired as an HTTP MCP). **Transparency caveat:** PixelLab's `no_background` bakes a dark backdrop, so every sprite gets a post-gen **border-seeded flood-fill cutout** (PIL; the `bgremove.py` pattern) → clean alpha. Per-suspect **calm/lying emotion variants = the tell**. **Build-time only — never a runtime dependency**, so zero Devvit compliance issue. Paid (~$9–24/mo after 40 free) — justified for the differentiated hero. Key at `~/.gstack/pixellab.key` (OUTSIDE the repo, never committed).
+- **Overworld + backgrounds (simple):** free CC0 — Kenney / OpenGameArt / itch.io CC0 — + PixelLab tilesets for the 1920s bar/alley/lot. Free-first.
+- Generated cast + previews saved at `~/.gstack/projects/reddithackathon/designs/dialogue-screen-20260624/`.
+
+## Dialogue stage (C11 revised): Disco-Elysium two-panel
+- **Portrait LEFT carries the lie-tell** (the money shot — big, one-handed), **dialogue RIGHT**. Italic crimson **stage-direction** = the non-color tell reinforcement. Background is **location-based** (bar / alley / lot).
+- **Text treatment: "Drowned Deep" (submerged, caustic, witch-green underglow) = default; "Gaslit Séance" (high-contrast framed) = the accessibility / high-visibility mode.**
+- **Mobile:** portrait reflows to a cropped top band over the dialogue.
+
+## Case template — "The Drowned Lily" (Level 1 · 1920s speakeasy + alley + parking lot)
+**Victim (fixed):** **Marco "the Ledger" Bellandi** — club fixer/fence; knew every debt + secret; was moving a relic for/against the **Order of the Pallid Star**. Found in the alley at half-two. **Killer is randomized PER PLAYER among the suspects → every suspect carries a plausible motive.**
+- **Suspects (≤8, the deduction set):** Lola Marsh (singer — **wine/garnet dress, NOT signature crimson**) · Don Vittorio Salvatore (mob boss) · Frankie "Knuckles" Conti (enforcer) · Sil "the Whisper" Greco (accountant) · Det. Roy Halloran (corrupt cop — **uniformed patrolman**) · Augie Doyle (barkeep — **recast as a curvy young woman**) · Nell Carraway (server) · Mr. Ash, the Pale Gentleman (the Order's envoy — the grounded Lovecraft vector).
+- **Witnesses (supporting tier):** Old Cobb (piano man) · Birdie (coat-check — timeline anchor) · Harlan (drunk regular — one real clue in the nonsense).
+- **Ambient (templated barks, zero LLM):** card sharp, flapper couple, bookkeeper, sailor. **Scripted (non-interactive set dressing):** alley uniforms + coroner.
+- **Motive web:** debts, jealousy, the relic, blackmail, a double-cross, self-defense, silencing. The Order is the occult red-herring thread — may be the answer or pure misdirection, per instance.
+
+---
+
 # How to run
 
 **Local test-run (no Devvit, offline mock LLM):**
@@ -138,7 +165,7 @@ Three high-leverage design rules that hold under any art direction:
 - **Tell-legibility is a protected layer (design-review).** A lying tell is a 2–4px signal on a 64–96px face, one-handed, in-feed. Tells must render with **high local face contrast, clean un-textured skin fill, iconographic/exaggerated states, plus a non-color reinforcement** (edge-pulse/micro-icon) so they survive glare *and* color-blindness. The scene's key light points at the face in focus.
 - **Density is peeled, not faced (progressive disclosure, design-review).** First 8s drop into **ONE lit NPC** (crowd dimmed); make the `principal/supporting/ambient` tiers **visually legible** (sharp+lit vs. soft-focus background) so the eye is told who matters; interactables glow only in-zone; the **board unlocks after the first clue** (never an empty corkboard); social overlay stays post-completion. 50 NPCs become a world you explore, not a wall you hit.
 
-**Art direction (LOCKED): "Lamplight Noir" + bounded occult accent (hybrid).**
+**Art direction (~~LOCKED~~ SUPERSEDED 2026-06-24 → see "# ART & CAST UPDATE" near the top: now "Cold Lovecraftian Noir" + pixel art. The palette/medium changed; the legibility rules in this section still hold.): "Lamplight Noir" + bounded occult accent (hybrid).**
 - **Palette (6+1, locked):** teal-charcoal `#1B2A2E` / slate `#24343A` rooms · lamp-amber `#E8B86D` / ember `#C97B43` key light · near-black ink `#0E1518` · aged-paper `#E9DEC9` UI · **reserved crimson `#D4322A` for the red string + lie-tell ONLY** (the reservation is what makes the screenshot ownable). Every load-bearing state also carries shape/icon/motion, not color alone.
 - **Line/shading:** confident ink linework + flat painterly fills, one occlusion shadow + one warm rim; no photorealism (anti-slop + consistency in one). One warm key light per scene, aimed at the face/interactable in focus — **the lighting rule IS the legibility rule.**
 - **Occult accent (the hybrid):** Lovecraftian lives in **story content, not the art system** — occasional "séance" cases use eldritch motifs as narrative + red herrings, rendered in the *same* locked palette/line. Earns unique-identity points without breaking tone, mobile legibility, or pipeline consistency.
@@ -387,4 +414,4 @@ Two independent re-reviews against the evolved design. **Engineering 7.0/10** (u
 
 **Design-quality — adopted (palette-agnostic):** the **red string = the locked signature** ("green grid") across icon/board/verdict-card/feed; **tell-legibility protected layer** (high contrast, non-color reinforcement); **progressive disclosure** for first-run density (one lit NPC → visible tiers → board unlocks after first clue).
 
-**Decisions locked (this round):** art direction = **"Lamplight Noir" + bounded occult accent (hybrid)** — Lovecraftian lives in story/red-herrings, not the art system; **v1 cast = lean ~10–15 NPCs, scaling to 50** once onboarding + generation-pool are proven.
+**Decisions locked (this round):** art direction = ~~**"Lamplight Noir" + bounded occult accent (hybrid)**~~ **→ SUPERSEDED 2026-06-24: "Cold Lovecraftian Noir" + pixel art, Lovecraft leaned-into in the art (see "# ART & CAST UPDATE")**; **v1 cast = lean ~10–15 NPCs, scaling to 50** once onboarding + generation-pool are proven.

@@ -19,12 +19,27 @@ import type {
 } from "../../shared/case.js";
 import { rngFromString, type Rng } from "../../shared/prng.js";
 
-const SETTINGS = ["Ashworth Manor", "the Velvet Theatre", "Blackwood Estate", "the Orient Lounge", "Greyfell Hall"];
-const VICTIMS = ["Lord Ashworth", "Madame Verlaine", "the impresario Holt", "Dr. Crane", "Countess Ostrova"];
+const SETTINGS = ["The Drowned Lily", "the Blue Hour speakeasy", "the Velvet Drown"];
+const VICTIMS = ["Marco \"the Ledger\" Bellandi", "Sal the fence", "the bootlegger Quinn"];
+// The Drowned Lily cast — these names match the portrait slugs in src/client/ui/portraits.ts.
 const NAMES = [
-  "Vane", "Mrs. Hale", "Col. Pike", "Iris", "Dr. Mott", "Sgt. Bly", "Lady Wren",
-  "Mr. Crabbe", "Nessa", "Father Goss", "Tilda", "Mr. Quill", "Esme", "Grout",
+  "Lola Marsh", "Don Vittorio", "Frankie Conti", "Sil Greco", "Det. Halloran",
+  "Nell Carraway", "Harlan", "Mr. Ash", "Augie Doyle", "Old Cobb", "Birdie",
 ];
+/** Per-character sin-themed flavor; falls back to a generic line for any other name. */
+const PERSONAS: Record<string, { blurb: string; voice: string }> = {
+  "Lola Marsh": { blurb: "The Lily's sultry headliner. They whisper her sin is Lust.", voice: "sultry" },
+  "Don Vittorio": { blurb: "The kingpin who launders through the club. His sin is Pride.", voice: "genial menace" },
+  "Frankie Conti": { blurb: "The Don's hot-tempered enforcer. His sin is Wrath.", voice: "hot-tempered" },
+  "Sil Greco": { blurb: "The Don's skimming accountant. His sin is Greed.", voice: "wary" },
+  "Det. Halloran": { blurb: "A corrupt patrolman who won't do his job. His sin is Sloth.", voice: "weary" },
+  "Nell Carraway": { blurb: "A weary server who covets the life she pours. Her sin is Envy.", voice: "nervous" },
+  "Harlan": { blurb: "A bloated regular three drinks past sense. His sin is Gluttony.", voice: "slurring" },
+  "Mr. Ash": { blurb: "A pale envoy of the Order of the Pallid Star.", voice: "cold" },
+  "Augie Doyle": { blurb: "The barkeep who sees everything and says little.", voice: "watchful" },
+  "Old Cobb": { blurb: "The half-blind piano man who hears it all.", voice: "riddling" },
+  "Birdie": { blurb: "The coat-check girl who clocks every arrival.", voice: "bright" },
+};
 const ZONE_DEFS: Array<{ id: string; name: string; tags: string[]; mood: string }> = [
   { id: "parlor", name: "The Parlor", tags: ["social", "host"], mood: "warm" },
   { id: "kitchen", name: "The Kitchen", tags: ["servants", "food"], mood: "busy" },
@@ -74,7 +89,7 @@ export function generateTemplate(dailySeed: string, opts?: { suspects?: number; 
     const home = rng.pick(zoneIds);
     return {
       id,
-      persona: { name: id, blurb: `${id}, present at ${setting}.`, voice: rng.pick(["clipped", "florid", "nervous", "genial", "curt"]) },
+      persona: { name: id, blurb: PERSONAS[id]?.blurb ?? `${id}, present at ${setting}.`, voice: PERSONAS[id]?.voice ?? rng.pick(["clipped", "florid", "nervous", "genial", "curt"]) },
       tier,
       homeZone: home,
       routine: [{ zoneId: home, fromTick: 0, toTick: 240, activity: "present" }],
