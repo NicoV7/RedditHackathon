@@ -1,18 +1,23 @@
 /**
  * src/client/ui/Resolution.tsx — win/lose reveal as a "Parlor Wrapped" summary
- * card. Walks the outcome, shows crowd stats (killerRightPct, your clue count),
- * streak, and a spoiler-safe shareable verdict line.
+ * card (Part 1.4 / 1.5 retention spine). A recap/cliffhanger opener, crowd stats
+ * (killerRightPct, your clue count), the detective XP/level + play/solve streaks,
+ * and a spoiler-safe shareable verdict line.
  *
- * The reveal is server-authoritative: everything here comes from AccuseResponse.
- * The share line is spoiler-safe — it never names the killer.
+ * The reveal is server-authoritative: the verdict + crowd come from AccuseResponse;
+ * the detective sheet (level/streaks) from the persistent DetectiveState. The share
+ * line + cliffhanger are spoiler-safe — they never name the killer.
  */
 import { useState } from "react";
-import type { AccuseResponse } from "../../shared/api.js";
+import type { AccuseResponse, DetectiveState } from "../../shared/api.js";
 import { noir, font } from "./theme.js";
+import { levelOf, recapOpener, cliffhanger } from "./detective.js";
 
 export interface ResolutionProps {
   result: AccuseResponse;
   dailySeed: string;
+  /** the persistent detective sheet (level + play/solve streaks); null until loaded. */
+  detective?: DetectiveState | null;
   onReplay?: () => void;
 }
 
@@ -24,9 +29,11 @@ export function shareLine(r: AccuseResponse, dailySeed: string): string {
 }
 
 export function Resolution(props: ResolutionProps): React.JSX.Element {
-  const { result: r, dailySeed } = props;
+  const { result: r, dailySeed, detective } = props;
   const [copied, setCopied] = useState(false);
   const share = shareLine(r, dailySeed);
+  const lvl = levelOf(detective ?? null);
+  const opener = recapOpener(r.solved, detective?.solveStreak ?? 0);
 
   async function copyShare(): Promise<void> {
     try {
@@ -40,6 +47,9 @@ export function Resolution(props: ResolutionProps): React.JSX.Element {
   return (
     <div style={styles.screen}>
       <div style={styles.card}>
+        {/* recap opener (Part 1.4) — spoiler-safe, never names the killer */}
+        <div style={styles.opener}>{opener}</div>
+
         <div style={{ ...styles.verdict, color: r.solved ? noir.amber : noir.crimson }}>
           {r.solved ? "Case Closed" : "The Killer Walks"}
         </div>
@@ -57,6 +67,29 @@ export function Resolution(props: ResolutionProps): React.JSX.Element {
           {r.rank != null && <Stat label="Rank" value={`#${r.rank}`} />}
         </div>
 
+        {/* Detective progression (Part 1.3) — level + XP bar + play/solve streaks. */}
+        {detective && (
+          <section style={styles.detective} aria-label="Your detective sheet">
+            <div style={styles.detRow}>
+              <span style={styles.detLevel}>Detective · Lv {lvl.level}</span>
+              <span style={styles.detXp}>
+                {lvl.intoLevel}/{lvl.span} XP
+              </span>
+            </div>
+            <div style={styles.xpBarWrap}>
+              <div style={{ ...styles.xpBar, width: `${Math.round(lvl.progress * 100)}%` }} />
+            </div>
+            <div style={styles.streaks}>
+              <span style={styles.streakChip} title="Consecutive days played (the habit)">
+                🔥 Play {detective.playStreak}
+              </span>
+              <span style={styles.streakChip} title="Consecutive solves (the skill)">
+                🎯 Solve {detective.solveStreak}
+              </span>
+            </div>
+          </section>
+        )}
+
         <div style={styles.crowd}>
           <div style={styles.crowdTitle}>The crowd</div>
           <div style={styles.crowdBarWrap}>
@@ -69,6 +102,9 @@ export function Resolution(props: ResolutionProps): React.JSX.Element {
             named the right killer.
           </div>
         </div>
+
+        {/* cliffhanger teaser (Part 1.4) — spoiler-safe, teases tomorrow's case */}
+        <div style={styles.cliff}>{cliffhanger()}</div>
 
         <div style={styles.shareBox} aria-label="Shareable verdict">
           {share}
@@ -121,6 +157,13 @@ const styles: Record<string, React.CSSProperties> = {
     border: `1px solid ${noir.amber}`,
     textAlign: "center",
   },
+  opener: {
+    fontSize: 14.5,
+    fontStyle: "italic",
+    lineHeight: 1.5,
+    color: "#5a5040",
+    marginBottom: 16,
+  },
   verdict: { fontSize: 14, letterSpacing: 3, fontWeight: 700, marginBottom: 6 },
   reveal: { fontSize: 24, marginBottom: 20 },
   killer: { color: noir.crimson },
@@ -128,11 +171,46 @@ const styles: Record<string, React.CSSProperties> = {
   stat: { minWidth: 64 },
   statValue: { fontSize: 26, fontWeight: 700, color: noir.ink },
   statLabel: { fontSize: 11, letterSpacing: 1, color: "#6a5f4a", textTransform: "uppercase" },
+  // ── detective progression ──
+  detective: {
+    textAlign: "left",
+    marginBottom: 22,
+    padding: "12px 14px",
+    background: noir.room,
+    borderRadius: 10,
+    color: noir.paper,
+  },
+  detRow: { display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 8 },
+  detLevel: { fontSize: 15, fontWeight: 700, color: noir.amber },
+  detXp: { fontSize: 12, color: noir.paperDim },
+  xpBarWrap: { height: 8, background: noir.ink, borderRadius: 999, overflow: "hidden" },
+  xpBar: { height: "100%", background: noir.amber, borderRadius: 999 },
+  streaks: { display: "flex", gap: 10, marginTop: 12 },
+  streakChip: {
+    fontSize: 12.5,
+    color: noir.paper,
+    background: "rgba(191,210,202,0.1)",
+    border: `1px solid ${noir.amber}55`,
+    borderRadius: 999,
+    padding: "5px 11px",
+  },
   crowd: { textAlign: "left", marginBottom: 22 },
   crowdTitle: { fontSize: 12, letterSpacing: 1, color: "#6a5f4a", marginBottom: 6 },
   crowdBarWrap: { height: 10, background: noir.room, borderRadius: 999, overflow: "hidden" },
   crowdBar: { height: "100%", background: noir.amber, borderRadius: 999 },
   crowdLabel: { marginTop: 8, fontSize: 13, color: "#3a3327" },
+  cliff: {
+    fontSize: 13.5,
+    fontStyle: "italic",
+    lineHeight: 1.5,
+    color: "#7a3a35",
+    background: `${noir.crimson}10`,
+    borderLeft: `2px solid ${noir.crimson}`,
+    borderRadius: "0 8px 8px 0",
+    padding: "10px 12px",
+    textAlign: "left",
+    marginBottom: 16,
+  },
   shareBox: {
     fontSize: 13,
     lineHeight: 1.4,

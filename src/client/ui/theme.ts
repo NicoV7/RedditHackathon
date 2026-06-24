@@ -23,3 +23,27 @@ export const font =
   "'Iowan Old Style', 'Palatino Linotype', Palatino, 'Times New Roman', serif";
 
 export type CSS = Record<string, React.CSSProperties>;
+
+/**
+ * The six inner-voice Faculties (Part 1.2), with a display label + a single glyph
+ * for the inner-voice rail. PURELY cosmetic metadata — the tell's faculty + line
+ * are server-authored; this only decorates the interjection. Logic + Empathy are
+ * SPINE; the rest are STRETCH but kept here so the rail renders any faculty a
+ * server tell names without code changes.
+ */
+export const FACULTY_META: Record<
+  string,
+  { label: string; glyph: string }
+> = {
+  logic: { label: "Logic", glyph: "⟁" },
+  empathy: { label: "Empathy", glyph: "♥" },
+  drama: { label: "Drama", glyph: "✶" },
+  perception: { label: "Perception", glyph: "◉" },
+  authority: { label: "Authority", glyph: "❡" },
+  encyclopedia: { label: "Encyclopedia", glyph: "❖" },
+} as const;
+
+/** Display metadata for a faculty id, with a safe fallback for unknown ids. */
+export function facultyMeta(faculty: string): { label: string; glyph: string } {
+  return FACULTY_META[faculty] ?? { label: faculty, glyph: "•" };
+}

@@ -16,6 +16,16 @@ import type {
   NominateResponse,
   AccuseRequest,
   AccuseResponse,
+  PresentRequest,
+  PresentResponse,
+  MoveRequest,
+  MoveResponse,
+  SaveStateRequest,
+  SaveStateResponse,
+  ResumeRequest,
+  ResumeResponse,
+  DetectiveRequest,
+  DetectiveResponse,
 } from "../shared/api.js";
 
 export class ApiError extends Error {
@@ -62,6 +72,26 @@ export const api = {
 
   accuse: (req: AccuseRequest): Promise<AccuseResponse> =>
     post<AccuseRequest, AccuseResponse>("accuse", req),
+
+  /** present a collected item to an NPC (the "gotcha") — fires presentReactions. */
+  present: (req: PresentRequest): Promise<PresentResponse> =>
+    post<PresentRequest, PresentResponse>("present", req),
+
+  /** record the player's logical zone for a tick (drives the perception model). */
+  move: (req: MoveRequest): Promise<MoveResponse> =>
+    post<MoveRequest, MoveResponse>("move", req),
+
+  /** persist the mid-case session (board graph, inventory, faculty XP). */
+  saveState: (req: SaveStateRequest): Promise<SaveStateResponse> =>
+    post<SaveStateRequest, SaveStateResponse>("saveState", req),
+
+  /** rehydrate today's saved session (or learn it's forfeit / start-fresh). */
+  resume: (req: ResumeRequest): Promise<ResumeResponse> =>
+    post<ResumeRequest, ResumeResponse>("resume", req),
+
+  /** fetch the persistent detective sheet (faculties, streaks, unlocks). */
+  detective: (req: DetectiveRequest): Promise<DetectiveResponse> =>
+    post<DetectiveRequest, DetectiveResponse>("detective", req),
 };
 
 export type Api = typeof api;

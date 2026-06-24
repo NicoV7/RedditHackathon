@@ -10,11 +10,13 @@
 import type { PhaserBridge } from "../bridge.js";
 import { mountWorld } from "./world.js";
 import { mountBoard } from "./board.js";
+import { mountPortrait } from "./portrait.js";
 
 export function createPhaserBridge(): PhaserBridge {
   return {
     mountWorld,
     mountBoard,
+    mountPortrait,
   };
 }
 
@@ -23,3 +25,5 @@ export const bridge: PhaserBridge = createPhaserBridge();
 
 export { mountWorld } from "./world.js";
 export { mountBoard } from "./board.js";
+export { mountPortrait } from "./portrait.js";
+export { createFx } from "./fx.js";

@@ -35,9 +35,45 @@ export interface ClientCaseView {
   items: ClientItemView[];
 }
 
+/** The six inner-voice detective Faculties (Part 1.2). Logic + Empathy are SPINE. */
+export type FacultyId = "logic" | "empathy" | "drama" | "perception" | "authority" | "encyclopedia";
+
+/** A deterministic inner-voice interjection — the "tell". Fires from a structural
+ *  `statedLie` + the player's faculty level, NEVER from RNG and NEVER parsed from the
+ *  LLM. `intensity` is a cosmetic strength for the Phaser filter (never read by logic). */
+export interface TellSignal {
+  faculty: FacultyId;
+  line: string;
+  intensity: number; // 0..1, cosmetic only
+}
+
+export interface FacultyLevels {
+  logic: number;
+  empathy: number;
+  drama: number;
+  perception: number;
+  authority: number;
+  encyclopedia: number;
+}
+
+/** Persistent detective sheet (Redis `detective:{playerId}`, sliding ≤30d TTL). */
+export interface DetectiveState {
+  faculties: FacultyLevels;
+  xp: number;
+  playStreak: number;
+  solveStreak: number;
+  unlocks: string[]; // e.g. "pressure", "magnifier", "hint"
+}
+
 export interface RevealedClue {
   id: string;
   text: string;
+  /** templated reformat the notetaker pins as a board node (server-authored) */
+  noteText?: string;
+  /** which NPC surfaced this clue (drives the notetaker → board edge) */
+  sourceNpcId?: string;
+  /** present ⇒ the line carried a lie-tell the player's faculties could read */
+  tell?: TellSignal;
 }
 
 // ── request/response shapes ──
@@ -74,7 +110,79 @@ export interface AccuseResponse {
     yourClueCount: number;
     crowd: { total: number; killerRightPct: number };
   };
+  /**
+   * Present (and non-null) ⇒ the server REJECTED a premature accusation (the
+   * Part 1.5 confidence gate was not met) and made NO state change. The client
+   * should keep the player in the case. `summary` is spoiler-safe (no killerName)
+   * when the accusation is rejected. Absent on a real (graded) accusation.
+   */
+  gateNotMet?: {
+    reason: "gateNotMet";
+    /** solution-edge clues required in discoveredClueIds (default = supportingClueIds.length). */
+    needed: number;
+    /** solution-edge clues actually present in discoveredClueIds. */
+    have: number;
+    /** true ⇒ the player hadn't even tagged a killer (the other half of the gate). */
+    killerTagged: boolean;
+  };
 }
+
+// ── present an item to an NPC (B2a) ──
+export interface PresentRequest { caseId: string; dailySeed: string; itemId: string; npcId: string; tick?: number; }
+export interface PresentResponse {
+  /** spoiler-safe reaction prose (templated/pre-rendered, never the LLM). */
+  reactionText: string;
+  /** clues the present-reaction unlocked (server-authoritative). */
+  revealed: RevealedClue[];
+  /** present ⇒ a reaction revealed a refuter ⇒ the NPC was caught in a lie. */
+  caughtInLie: boolean;
+  moderated?: boolean;
+}
+
+// ── record the player's logical zone for a tick (drives perception) (B2a) ──
+export interface MoveRequest { caseId: string; dailySeed: string; zoneId: string; tick: number; }
+export interface MoveResponse {
+  /** the zone now recorded as the player's logical position. */
+  zoneId: string;
+  /** NPC ids that witnessed the player entering this zone at this tick. */
+  witnessedBy: string[];
+}
+
+// ── mid-case save/resume (B2a) ──
+export interface SaveStateRequest {
+  dailySeed: string;
+  dayId: string;
+  posZone: string;
+  boardGraph: unknown;
+  inventory: string[];
+  transcriptRef: string;
+  questionsUsed: number;
+  elapsedMs: number;
+  facultyXp?: Partial<FacultyLevels>;
+}
+export interface SaveStateResponse { ok: true }
+
+export interface ResumeRequest { dailySeed: string; dayId: string; }
+export interface ResumeResponse {
+  /** the saved session for today, if any (null ⇒ start fresh). */
+  state: {
+    posZone: string;
+    boardGraph: unknown;
+    inventory: string[];
+    transcriptRef: string;
+    questionsUsed: number;
+    elapsedMs: number;
+    facultyXp: Partial<FacultyLevels>;
+  } | null;
+  /** true ⇒ a prior-day session is forfeit/read-only (no streak penalty). */
+  readOnly: boolean;
+  /** true ⇒ the client should load a fresh case for `dayId`. */
+  startFresh: boolean;
+}
+
+// ── persistent detective sheet (B2a) ──
+export interface DetectiveRequest { /* playerId comes from the session */ }
+export interface DetectiveResponse { detective: DetectiveState; }
 
 /** Strip everything secret. The ONLY place an instance becomes a client payload. */
 export function toClientView(instance: CaseInstance, dailySeed: string): ClientCaseView {

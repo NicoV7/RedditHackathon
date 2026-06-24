@@ -14,6 +14,9 @@ import type {
   RevealedClue,
   NominationRole,
   AccuseResponse,
+  DetectiveState,
+  FacultyLevels,
+  TellSignal,
 } from "../../shared/api.js";
 
 // ───────────────────────── Phases ─────────────────────────
@@ -25,6 +28,20 @@ export type Phase =
   | "Board"
   | "Accusing"
   | "Resolved";
+
+/**
+ * A board node derived from a revealed clue that carries `noteText`. The
+ * notetaker pins these onto the Deduction Board; `sourceNpcId` (when present)
+ * is a board edge back to the NPC that surfaced the clue. PURELY derived data —
+ * the server authors `noteText`/`sourceNpcId`; the client never invents either.
+ */
+export interface BoardNode {
+  clueId: string;
+  /** server-authored, templated pin label (falls back to clue.text). */
+  noteText: string;
+  /** the NPC that surfaced the clue, if any (drives a board → NPC edge). */
+  sourceNpcId?: string;
+}
 
 /** Data accumulated across the case; carried by every post-load state. */
 export interface GameData {
@@ -41,6 +58,20 @@ export interface GameData {
   startedAtMs: number;
   /** true once the first clue lands — unlocks the Deduction Board */
   boardUnlocked: boolean;
+  /** the avatar's current logical zone (server-authoritative via MOVE_PLAYER). */
+  playerZone: string | null;
+  /** persistent detective sheet (faculties, streaks); null until SET_DETECTIVE. */
+  detective: DetectiveState | null;
+  /**
+   * latest tell per dialogue, keyed by npcId — drives the Faculties HUD lie-glow.
+   * Cosmetic only: never read by win/lose logic. The tell rides in on REVEAL_CLUES.
+   */
+  tells: Record<string, TellSignal>;
+  /**
+   * true ⇒ the server REJECTED the last accusation as premature (gateNotMet).
+   * Drives the Board's "need more evidence" prompt; cleared on the next accuse.
+   */
+  needMoreEvidence: boolean;
 }
 
 // ───────────────────── State union ─────────────────────
@@ -90,9 +121,19 @@ export type GameAction =
   | { type: "CLOSE_BOARD" } // Board → Exploring
   | { type: "ASKED" } // a question was sent (await started)
   | { type: "REVEAL_CLUES"; clues: RevealedClue[]; fromItemId?: string }
+  | {
+      // a present-an-item-to-an-NPC result: reveal clues + record the lie-catch
+      type: "PRESENT_RESULT";
+      clues: RevealedClue[];
+      npcId: string;
+      caughtInLie: boolean;
+    }
+  | { type: "MOVE_PLAYER"; zoneId: string } // server-confirmed logical zone
+  | { type: "SET_DETECTIVE"; detective: DetectiveState } // detective sheet loaded
   | { type: "TAG_NPC"; npcId: string; role: NominationRole }
   | { type: "BEGIN_ACCUSE"; nominatedKillerId: string }
   | { type: "CANCEL_ACCUSE" } // Accusing → Board
+  | { type: "GATE_REJECTED" } // server rejected a premature accuse → back to Board
   | { type: "RESOLVED"; result: AccuseResponse };
 
 // ───────────────────── Helpers ─────────────────────
@@ -105,6 +146,10 @@ function carry(s: GameData): GameData {
     inventory: s.inventory,
     startedAtMs: s.startedAtMs,
     boardUnlocked: s.boardUnlocked,
+    playerZone: s.playerZone,
+    detective: s.detective,
+    tells: s.tells,
+    needMoreEvidence: s.needMoreEvidence,
   };
 }
 
@@ -118,6 +163,27 @@ function mergeClues(existing: RevealedClue[], incoming: RevealedClue[]): Reveale
     }
   }
   return merged;
+}
+
+/**
+ * Fold any tell carried by `incoming` clues into the per-NPC tells map, keyed by
+ * `sourceNpcId`. The latest tell for a dialogue wins (drives the Faculties HUD
+ * glow). Cosmetic-only: this map is never read by win/lose logic.
+ */
+function foldTells(
+  existing: Record<string, TellSignal>,
+  incoming: RevealedClue[],
+  fallbackNpcId?: string,
+): Record<string, TellSignal> {
+  let next = existing;
+  for (const c of incoming) {
+    if (!c.tell) continue;
+    const npcId = c.sourceNpcId ?? fallbackNpcId;
+    if (!npcId) continue;
+    if (next === existing) next = { ...existing };
+    next[npcId] = c.tell;
+  }
+  return next;
 }
 
 /** True once the player holds a state that carries game data (post-load). */
@@ -141,6 +207,10 @@ export function reducer(state: GameState, action: GameAction): GameState {
         inventory: [],
         startedAtMs: action.startedAtMs,
         boardUnlocked: false,
+        playerZone: null,
+        detective: null,
+        tells: {},
+        needMoreEvidence: false,
       };
     }
 
@@ -191,7 +261,31 @@ export function reducer(state: GameState, action: GameAction): GameState {
           : state.inventory;
       // first clue unlocks the board (one-way latch)
       const boardUnlocked = state.boardUnlocked || clues.length > 0;
-      return { ...state, clues, inventory, boardUnlocked } as GameState;
+      // surface any lie-tell carried by the clues for the Faculties HUD.
+      // When in dialogue, the active NPC is the fallback source for the tell.
+      const fallbackNpcId = state.phase === "Dialogue" ? state.npcId : undefined;
+      const tells = foldTells(state.tells, action.clues, fallbackNpcId);
+      return { ...state, clues, inventory, boardUnlocked, tells } as GameState;
+    }
+
+    case "PRESENT_RESULT": {
+      if (!isLoaded(state)) return state;
+      const clues = mergeClues(state.clues, action.clues);
+      const boardUnlocked = state.boardUnlocked || clues.length > 0;
+      // a caught lie is a tell against the presented-to NPC; otherwise fold any
+      // tell the revealed clues carry (sourceNpcId wins, else the present target).
+      const tells = foldTells(state.tells, action.clues, action.npcId);
+      return { ...state, clues, boardUnlocked, tells } as GameState;
+    }
+
+    case "MOVE_PLAYER": {
+      if (!isLoaded(state)) return state;
+      return { ...state, playerZone: action.zoneId } as GameState;
+    }
+
+    case "SET_DETECTIVE": {
+      if (!isLoaded(state)) return state;
+      return { ...state, detective: action.detective } as GameState;
     }
 
     case "TAG_NPC": {
@@ -206,16 +300,26 @@ export function reducer(state: GameState, action: GameAction): GameState {
       // only from the Board, and only when the nominated NPC is tagged 'killer'
       if (state.phase !== "Board") return state;
       if (state.nominations[action.nominatedKillerId] !== "killer") return state;
+      // clear any prior "need more evidence" flag — this is a fresh attempt.
       return {
         phase: "Accusing",
         nominatedKillerId: action.nominatedKillerId,
         ...carry(state),
+        needMoreEvidence: false,
       };
     }
 
     case "CANCEL_ACCUSE": {
       if (state.phase !== "Accusing") return state;
       return { phase: "Board", ...carry(state) };
+    }
+
+    case "GATE_REJECTED": {
+      // server rejected a premature accusation (AccuseResponse.gateNotMet): no
+      // state change server-side, so keep the player in the case. Return to the
+      // Board with a "need more evidence" flag for the UI to surface.
+      if (state.phase !== "Accusing" && state.phase !== "Board") return state;
+      return { phase: "Board", ...carry(state), needMoreEvidence: true };
     }
 
     case "RESOLVED": {
@@ -256,4 +360,48 @@ export function nominatedKiller(s: GameData): string | null {
     if (role === "killer") return npcId;
   }
   return null;
+}
+
+/**
+ * Default deduction-strength threshold for the client-side accuse gate. The
+ * SERVER enforces the real gate (AccuseResponse.gateNotMet, on solution-edge
+ * clue coverage); this is only a UI affordance so the button isn't a footgun.
+ */
+export const ACCUSE_THRESHOLD = 0.6;
+
+/**
+ * Pure client-side accuse gate (Part 1.5). True ⇒ a killer is tagged AND that
+ * killer's deduction-strength meter clears the threshold. This is advisory only:
+ * the server independently re-checks and may still return `gateNotMet`, which we
+ * handle via GATE_REJECTED. Defaulting `threshold` keeps existing callers working.
+ */
+export function canAccuse(s: GameData, threshold: number = ACCUSE_THRESHOLD): boolean {
+  const killerId = nominatedKiller(s);
+  if (!killerId) return false;
+  return deductionStrength(s, killerId) >= threshold;
+}
+
+/**
+ * Notetaker board nodes: every revealed clue that carries server-authored
+ * `noteText` becomes a pin (with an optional `sourceNpcId` edge back to the NPC).
+ * Pure projection over `clues` — the notetaker never invents text. Clues without
+ * `noteText` are intentionally omitted (they're not board-pinnable notes).
+ */
+export function boardNodes(s: GameData): BoardNode[] {
+  const nodes: BoardNode[] = [];
+  for (const c of s.clues) {
+    if (!c.noteText) continue;
+    nodes.push({ clueId: c.id, noteText: c.noteText, sourceNpcId: c.sourceNpcId });
+  }
+  return nodes;
+}
+
+/** The latest lie-tell recorded for an NPC's dialogue, if any (Faculties HUD). */
+export function latestTell(s: GameData, npcId: string): TellSignal | null {
+  return s.tells[npcId] ?? null;
+}
+
+/** Convenience: the player's current faculty levels (or null until loaded). */
+export function faculties(s: GameData): FacultyLevels | null {
+  return s.detective?.faculties ?? null;
 }

@@ -21,6 +21,13 @@ export interface RedisLike {
   hGetAll(key: string): Promise<Record<string, string>>;
   zAdd(key: string, member: string, score: number): Promise<void>;
   zIncrBy(key: string, member: string, by: number): Promise<number>;
+  /**
+   * Remove a single member from a sorted set (no-op if absent/missing). Needed by
+   * the deletion purge to drop a player's leaderboard membership from the SHARED
+   * `lb:{caseId}` set without touching other players' scores. The real Devvit
+   * Redis adapter MUST map this to its `zRem`.
+   */
+  zRem(key: string, member: string): Promise<void>;
   zScore(key: string, member: string): Promise<number | null>;
   zRevRange(key: string, start: number, stop: number): Promise<ZMember[]>;
   zRevRank(key: string, member: string): Promise<number | null>;
@@ -81,6 +88,15 @@ export class FakeRedis implements RedisLike {
     z.set(member, v);
     this.zset.set(key, z);
     return v;
+  }
+  async zRem(key: string, member: string) {
+    const z = this.zset.get(key);
+    if (!z) return;
+    z.delete(member);
+    if (z.size === 0) {
+      this.zset.delete(key);
+      this.touch(key); // drop a now-empty set's TTL bookkeeping
+    }
   }
   async zScore(key: string, member: string) {
     return this.zset.get(key)?.get(member) ?? null;
