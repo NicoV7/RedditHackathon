@@ -73,14 +73,19 @@ export function App({ bridge, dailySeed: seedProp }: AppProps): React.JSX.Elemen
     };
   }, [dailySeed]);
 
-  // ── mount/unmount the living-world scene for the Exploring + Dialogue phases ──
-  //    The world host div lives in a PERSISTENT layer (see render) that stays in
-  //    the DOM across BOTH phases — hidden behind the dialogue, never unmounted —
-  //    so the Phaser scene is not torn down on the chat round-trip. That keeps its
-  //    integer tick / NPC positions / camera alive (a stateful overworld). The
-  //    scene is only destroyed when we leave the world entirely (Board/Resolved).
+  // ── mount/unmount the living-world scene — kept ALIVE across every in-case
+  //    phase (Exploring/Dialogue/Board/Accusing). The host div lives in a
+  //    PERSISTENT layer (see render) hidden behind the opaque dialogue/board, so
+  //    the Phaser scene is created ONCE and never torn down mid-case. While away
+  //    it is paused (see the pause/resume effect below), keeping its integer tick
+  //    / NPC positions / camera frozen in place. It is destroyed only when we
+  //    leave the case entirely (Loading/Briefing/Resolved).
   useEffect(() => {
-    const inWorld = displayed.phase === "Exploring" || displayed.phase === "Dialogue";
+    const inWorld =
+      displayed.phase === "Exploring" ||
+      displayed.phase === "Dialogue" ||
+      displayed.phase === "Board" ||
+      displayed.phase === "Accusing";
     if (inWorld && worldHostRef.current && !worldHandle.current) {
       worldHandle.current = bridge.mountWorld(worldHostRef.current, displayed.view, {
         onApproachNpc: (npcId) => dispatch({ type: "ENTER_DIALOGUE", npcId }),
@@ -91,6 +96,15 @@ export function App({ bridge, dailySeed: seedProp }: AppProps): React.JSX.Elemen
       worldHandle.current.destroy();
       worldHandle.current = null;
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [displayed.phase]);
+
+  // ── save+pause the overworld while the player is away (Dialogue/Board/Accusing),
+  //    resume it on return to Exploring. Declared AFTER the mount effect so the
+  //    handle exists; the world.ts guards make repeated pause/resume idempotent. ──
+  useEffect(() => {
+    if (displayed.phase === "Exploring") worldHandle.current?.resume();
+    else worldHandle.current?.pause();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [displayed.phase]);
 
@@ -276,12 +290,16 @@ export function App({ bridge, dailySeed: seedProp }: AppProps): React.JSX.Elemen
   const worldVisible = displayed.phase === "Exploring";
   return (
     <div style={shell}>
-      {/* Persistent living-world layer — present across BOTH Exploring and Dialogue
-          so the Phaser scene (integer tick / NPC positions / camera) survives the
-          chat round-trip. During Dialogue it is HIDDEN (not unmounted) behind the
-          opaque dialogue, keeping its state; it is torn down only when we leave the
-          world entirely. The nav lives here too so it travels with the world. */}
-      {(displayed.phase === "Exploring" || displayed.phase === "Dialogue") && (
+      {/* Persistent living-world layer — present across every in-case phase
+          (Exploring/Dialogue/Board/Accusing) so the Phaser scene (integer tick /
+          NPC positions / camera) survives every round-trip. When not Exploring it
+          is HIDDEN (not unmounted) behind the opaque dialogue/board and PAUSED,
+          keeping its state frozen; it is torn down only when we leave the case
+          entirely. The nav lives here too so it travels with the world. */}
+      {(displayed.phase === "Exploring" ||
+        displayed.phase === "Dialogue" ||
+        displayed.phase === "Board" ||
+        displayed.phase === "Accusing") && (
         <div style={worldVisible ? worldLayer : worldLayerHidden}>
           <div ref={worldHostRef} style={worldHost} />
           <nav style={exploreNav}>
@@ -298,8 +316,15 @@ export function App({ bridge, dailySeed: seedProp }: AppProps): React.JSX.Elemen
         </div>
       )}
       {/* keyed so each screen change re-triggers the `parlorRise` enter animation;
-          Exploring renders null here (the persistent world layer above is its screen) */}
-      <div key={displayed.phase} className="parlor-screen">
+          Exploring renders null here (the persistent world layer above is its screen).
+          The `parlorRise` transform gives this wrapper a stacking context that paints
+          ABOVE the absolute world layer — so when it's empty (Exploring) it must be
+          pointer-transparent, or it would swallow taps meant for the world + nav. */}
+      <div
+        key={displayed.phase}
+        className="parlor-screen"
+        style={displayed.phase === "Exploring" ? screenPassThrough : undefined}
+      >
         {content}
       </div>
       <TransitionVeil veil={veil} />
@@ -355,6 +380,10 @@ const worldLayerHidden: React.CSSProperties = {
   visibility: "hidden",
   pointerEvents: "none",
 };
+// During Exploring the keyed wrapper is empty; let taps fall through it to the
+// persistent world layer (canvas + nav) beneath. (It paints above the world layer
+// because the parlorRise transform gives it a stacking context.)
+const screenPassThrough: React.CSSProperties = { pointerEvents: "none" };
 const worldHost: React.CSSProperties = { flex: 1, minHeight: 0, background: noir.ink };
 const exploreNav: React.CSSProperties = {
   display: "flex",

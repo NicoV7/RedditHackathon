@@ -324,6 +324,16 @@ export function mountWorld(
       if (scene.scene && scene.scene.isActive()) scene.setActiveZone(zoneId);
       else scene.events.once(Phaser.Scenes.Events.CREATE, () => scene.setActiveZone(zoneId));
     },
+    pause(): void {
+      // Pausing the scene halts its Clock (the integer tick timer stops) AND its
+      // tweens — the world freezes in place. It emits PAUSE, not SHUTDOWN, so the
+      // teardown listener never fires and all state is preserved. Idempotent.
+      if (scene.scene && scene.scene.isActive()) scene.scene.pause();
+    },
+    resume(): void {
+      // Continue the frozen world from exactly where it stopped. Idempotent.
+      if (scene.scene && scene.scene.isPaused()) scene.scene.resume();
+    },
     destroy(): void {
       game.destroy(true);
     },

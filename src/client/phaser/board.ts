@@ -93,10 +93,14 @@ class BoardScene extends Phaser.Scene {
   private pinchStartDist = 0;
   private pinchStartZoom = 1;
 
-  constructor(data: BoardData, handlers: BoardHandlers) {
+  /** fired at the end of create() so the mount handle can flush queued calls */
+  private readonly onReady?: () => void;
+
+  constructor(data: BoardData, handlers: BoardHandlers, onReady?: () => void) {
     super("board");
     this.boardData = data;
     this.handlers = handlers;
+    this.onReady = onReady;
   }
 
   create(): void {
@@ -110,6 +114,10 @@ class BoardScene extends Phaser.Scene {
     this.setupZoom();
 
     this.events.once(Phaser.Scenes.Events.SHUTDOWN, () => this.teardown());
+
+    // Cards/meters now exist — let the mount handle flush any queued addCard/
+    // setStrength calls that arrived before the scene booted.
+    this.onReady?.();
   }
 
   // ── Card creation / layout ──
@@ -394,7 +402,16 @@ export function mountBoard(
   data: BoardData,
   handlers: BoardHandlers,
 ): BoardHandle {
-  const scene = new BoardScene(data, handlers);
+  // Calls can arrive (App seeds the strength meters) before the Phaser scene has
+  // booted — at which point `scene.events`/`scene.scene` don't exist yet. Queue
+  // them and flush deterministically from the scene's create() via onReady,
+  // rather than touching the not-yet-initialized scene systems.
+  const pending: Array<() => void> = [];
+  let booted = false;
+  const scene = new BoardScene(data, handlers, () => {
+    booted = true;
+    for (const fn of pending.splice(0)) fn();
+  });
   const game = new Phaser.Game({
     type: Phaser.AUTO,
     parent: el,
@@ -408,10 +425,9 @@ export function mountBoard(
     scene,
   });
 
-  const ready = (): boolean => scene.scene && scene.scene.isActive();
   const whenReady = (fn: () => void): void => {
-    if (ready()) fn();
-    else scene.events.once(Phaser.Scenes.Events.CREATE, fn);
+    if (booted) fn();
+    else pending.push(fn);
   };
 
   return {

@@ -23,7 +23,7 @@ import { App } from "./App.js";
 /** Typed no-op bridge: renders the React shell without the Phaser canvases. */
 const noopBridge: PhaserBridge = {
   mountWorld(_el: HTMLElement, _view: ClientCaseView, _handlers: WorldHandlers): WorldHandle {
-    return { setActiveZone() {}, destroy() {} };
+    return { setActiveZone() {}, pause() {}, resume() {}, destroy() {} };
   },
   mountBoard(_el: HTMLElement, _data: BoardData, _handlers: BoardHandlers): BoardHandle {
     return { addCard() {}, setStrength() {}, destroy() {} };

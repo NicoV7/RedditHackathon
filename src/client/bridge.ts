@@ -13,6 +13,10 @@ export interface WorldHandlers {
 }
 export interface WorldHandle {
   setActiveZone(zoneId: string): void;
+  /** freeze the living world (tick clock + tweens) — state held in place */
+  pause(): void;
+  /** resume the living world from the frozen state */
+  resume(): void;
   destroy(): void;
 }
 
