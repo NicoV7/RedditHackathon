@@ -383,3 +383,193 @@ export function allAssetKeys(): string[] {
   for (const name of Object.keys(manifest.sfx) as SfxName[]) keys.add(manifest.sfx[name].key);
   return [...keys];
 }
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// PixelLab pixel-art layer — "Best Use of Phaser" visual payoff (PLAN Part 4)
+// ───────────────────────────────────────────────────────────────────────────────
+// Freshly-generated 1920s noir art lives under src/client/assets/{sprites,tilesets}.
+// This block is INDEPENDENT of the placeholder `manifest`/`loadAssets` above (those
+// have pinned unit-test expectations) — it discovers ONLY files that exist on disk
+// via Vite's `import.meta.glob`, so a missing slug/zone is simply absent from the map
+// (graceful guard, never a build break). world.ts queues these into Phaser and
+// degrades to the Graphics fallback for whatever's missing.
+//
+// COSMETIC-FX GUARD: sprite/tileset selection is deterministic (stable index over a
+// named slug list) and purely decorative — never read by game logic (PLAN 4.2).
+
+// Vite's build plugin statically rewrites `import.meta.glob(...)` calls that take
+// LITERAL arguments — the member access `import.meta.glob` MUST appear verbatim at
+// the call site (a cast-to-variable or a function-wrapped pattern is NOT analysed).
+// So we declare the signature on ImportMeta via module augmentation (we don't pull
+// `vite/client` into the single tsconfig) and call it directly. Eager + `?url`
+// yields a `{ [path]: url }` map of present files ONLY; absent paths never appear —
+// exactly the graceful-missing guard. Under vitest (no Vite transform) `glob` is
+// absent, so each call is guarded and short-circuits to an empty map (loaders no-op).
+type GlobUrlMap = Record<string, string>;
+type GlobModMap = Record<string, { default?: unknown }>;
+
+declare global {
+  interface ImportMeta {
+    readonly glob?: {
+      (p: string, o: { eager: true; import: "default" }): GlobUrlMap;
+      (p: string, o: { eager: true }): GlobModMap;
+    };
+  }
+}
+
+// Eagerly bundle every sprite-direction PNG and tileset PNG/JSON that EXISTS. The
+// literal patterns below are what Vite analyses at build time; missing files are
+// simply not in the resulting maps. For an image module the `default` export IS the
+// build-emitted, content-hashed URL — so `{ eager, import:"default" }` (NOT a `?url`
+// query, which Rollup may tree-shake when the map is only read dynamically) gives a
+// `{ relativePath: url }` map that reliably emits every matched asset.
+const SPRITE_URLS: GlobUrlMap = import.meta.glob
+  ? import.meta.glob("../assets/sprites/*/*.png", { eager: true, import: "default" })
+  : {};
+const TILESET_PNG_URLS: GlobUrlMap = import.meta.glob
+  ? import.meta.glob("../assets/tilesets/*.png", { eager: true, import: "default" })
+  : {};
+// JSON Wang-metadata: import the parsed object directly (not a URL) so world.ts can
+// build the corner atlas synchronously without a fetch.
+const TILESET_JSON: GlobModMap = import.meta.glob
+  ? import.meta.glob("../assets/tilesets/*.json", { eager: true })
+  : {};
+
+/** The 8 PixelLab facing directions authored per character (canvas 68×68). */
+export type SpriteDir =
+  | "south"
+  | "east"
+  | "north"
+  | "west"
+  | "south-east"
+  | "north-east"
+  | "north-west"
+  | "south-west";
+
+export const SPRITE_DIRS: readonly SpriteDir[] = [
+  "south",
+  "east",
+  "north",
+  "west",
+  "south-east",
+  "north-east",
+  "north-west",
+  "south-west",
+];
+
+/**
+ * The full character slug roster (PixelLab). `detective` is the PLAYER avatar; the
+ * other 11 are the NPC pool. Order is STABLE — world.ts assigns NPC sprites by a
+ * deterministic index over `NPC_SPRITE_SLUGS`, so a given NPC shows the same sprite
+ * every run. Slugs whose art is absent are filtered out by `availableSpriteSlugs()`.
+ */
+export const PLAYER_SPRITE_SLUG = "detective" as const;
+export const NPC_SPRITE_SLUGS: readonly string[] = [
+  "lola-marsh",
+  "don-vittorio",
+  "frankie-conti",
+  "sil-greco",
+  "roy-halloran",
+  "augie-doyle",
+  "nell-carraway",
+  "old-cobb",
+  "birdie",
+  "harlan",
+  "mr-ash",
+];
+
+/** Zone tileset slugs (PixelLab Wang tilesets), assigned to zones by zone index. */
+export const TILESET_SLUGS: readonly string[] = ["bar", "alley", "lot"];
+
+/** Phaser texture key for one character-direction frame. Stable & collision-free. */
+export function spriteFrameKey(slug: string, dir: SpriteDir): string {
+  return `spr:${slug}:${dir}`;
+}
+
+/** Phaser texture key for a PixelLab Wang tileset image. */
+export function wangTilesetKey(slug: string): string {
+  return `wang:${slug}`;
+}
+
+/** Resolve the bundled URL for one sprite frame, or undefined if its file is absent.
+ *  Glob keys are the import specifier paths; we match on the `/<slug>/<dir>.png` tail. */
+export function spriteFrameUrl(slug: string, dir: SpriteDir): string | undefined {
+  const tail = `/sprites/${slug}/${dir}.png`;
+  for (const [path, url] of Object.entries(SPRITE_URLS)) {
+    if (path.endsWith(tail)) return url;
+  }
+  return undefined;
+}
+
+/** True iff at least the south (idle) frame of a slug is bundled. */
+export function spriteSlugPresent(slug: string): boolean {
+  return spriteFrameUrl(slug, "south") !== undefined;
+}
+
+/** The NPC-pool slugs whose art actually shipped, in stable order (guard-filtered). */
+export function availableNpcSpriteSlugs(): string[] {
+  return NPC_SPRITE_SLUGS.filter(spriteSlugPresent);
+}
+
+/** Resolve the bundled URL for a Wang tileset PNG, or undefined if absent. */
+export function wangTilesetUrl(slug: string): string | undefined {
+  const tail = `/tilesets/${slug}.png`;
+  for (const [path, url] of Object.entries(TILESET_PNG_URLS)) {
+    if (path.endsWith(tail)) return url;
+  }
+  return undefined;
+}
+
+/** Resolve the parsed Wang metadata JSON for a tileset slug, or undefined if absent. */
+export function wangTilesetMeta(slug: string): unknown {
+  const tail = `/tilesets/${slug}.json`;
+  for (const [path, mod] of Object.entries(TILESET_JSON)) {
+    if (path.endsWith(tail)) {
+      // Vite's eager JSON glob wraps the parsed object under `default` (and spreads
+      // named keys); prefer `.default`, fall back to the module object itself.
+      const m = mod as { default?: unknown };
+      return m.default ?? mod;
+    }
+  }
+  return undefined;
+}
+
+/** The tileset slugs whose PNG actually shipped, in stable order (guard-filtered). */
+export function availableTilesetSlugs(): string[] {
+  return TILESET_SLUGS.filter((s) => wangTilesetUrl(s) !== undefined);
+}
+
+/**
+ * Deterministically assign a tileset slug to a zone by its INDEX in the map's zone
+ * list (stable across a run; never RNG). Returns undefined if no tileset art shipped,
+ * so the caller keeps the programmatic noir floor. Cosmetic only.
+ */
+export function tilesetSlugForZoneIndex(zoneIndex: number): string | undefined {
+  const avail = availableTilesetSlugs();
+  if (avail.length === 0) return undefined;
+  const i = ((zoneIndex % avail.length) + avail.length) % avail.length;
+  return avail[i];
+}
+
+/**
+ * Deterministically assign an NPC-pool sprite slug to an NPC by a STABLE index
+ * (typically a hash of npcId, computed by the caller with the project PRNG, OR the
+ * npc's array position). Reserves `detective` for the player. Returns undefined if no
+ * NPC sprite art shipped, so the caller keeps the amber-circle fallback. Cosmetic.
+ */
+export function npcSpriteSlugForIndex(index: number): string | undefined {
+  const avail = availableNpcSpriteSlugs();
+  if (avail.length === 0) return undefined;
+  const i = ((index % avail.length) + avail.length) % avail.length;
+  return avail[i];
+}
+
+/** Counts of PixelLab art actually bundled — for a debug overlay / preflight only.
+ *  Pure; never read by game logic. */
+export function pixelArtReport(): { spriteSlugs: number; tilesets: number; player: boolean } {
+  return {
+    spriteSlugs: availableNpcSpriteSlugs().length,
+    tilesets: availableTilesetSlugs().length,
+    player: spriteSlugPresent(PLAYER_SPRITE_SLUG),
+  };
+}

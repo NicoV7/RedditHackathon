@@ -31,9 +31,32 @@ import type { Door, MapDef, NavGrid, RoutineStep, Zone } from "../../shared/case
 import { hashSeed, mulberry32 } from "../../shared/prng.js";
 import { portraitFor } from "../ui/portraits.js";
 import type { WorldHandle, WorldHandlers } from "../bridge.js";
-import { loadAssets, loadZoneAssets, tilesetKey } from "./assets.js";
+import {
+  loadAssets,
+  loadZoneAssets,
+  tilesetKey,
+  PLAYER_SPRITE_SLUG,
+  SPRITE_DIRS,
+  type SpriteDir,
+  spriteFrameKey,
+  spriteFrameUrl,
+  spriteSlugPresent,
+  npcSpriteSlugForIndex,
+  tilesetSlugForZoneIndex,
+  wangTilesetKey,
+  wangTilesetUrl,
+  wangTilesetMeta,
+} from "./assets.js";
 import { createFx, type FxQuality, type ParlorFx } from "./fx.js";
 import { findPath, type Cell } from "./pathfind.js";
+import {
+  buildWangAtlas,
+  cornersAt,
+  flatLowerField,
+  wangRectForCorners,
+  type WangAtlas,
+  type WangTilesetMeta,
+} from "./wang.js";
 
 // ── Lamplight Noir palette ──
 const COL_BG = 0x12_1c_1f; // deep backdrop behind rooms
@@ -64,6 +87,29 @@ function npcPortraitKey(npcId: string): string {
   return `worldportrait_${npcId.replace(/[^a-z0-9]/gi, "_")}`;
 }
 const AVATAR_PORTRAIT_KEY = "worldportrait_avatar";
+
+/** Target on-floor height (px) for a directional PixelLab character sprite (canvas
+ *  68×68, character ~40px). Cosmetic; the logical position is the container's cell. */
+const NPC_DIR_SPRITE_H = 46;
+const AVATAR_DIR_SPRITE_H = 44;
+
+/**
+ * Map an integer movement heading (dcol, drow) to the nearest of the 8 PixelLab
+ * facing directions. Screen-space: +row is DOWN (south), +col is RIGHT (east). A
+ * still actor (0,0) faces south (idle). Pure & integer-only — purely cosmetic frame
+ * selection, never read by logic.
+ */
+function headingToDir(dcol: number, drow: number): SpriteDir {
+  const c = Math.sign(dcol);
+  const r = Math.sign(drow);
+  if (c === 0 && r === 0) return "south"; // idle faces the camera
+  if (c === 0) return r > 0 ? "south" : "north";
+  if (r === 0) return c > 0 ? "east" : "west";
+  if (c > 0 && r > 0) return "south-east";
+  if (c > 0 && r < 0) return "north-east";
+  if (c < 0 && r > 0) return "south-west";
+  return "north-west";
+}
 
 /** Logical motion advances one tick per this many ms. Cosmetic cadence only. */
 const MS_PER_TICK = 2200;
@@ -156,6 +202,10 @@ interface NpcSprite {
   lastCol: number;
   lastRow: number;
   tween?: Phaser.Tweens.Tween;
+  /** the assigned PixelLab slug (cosmetic), or undefined when on the circle fallback. */
+  slug?: string;
+  /** the directional sprite Image (when a slug is assigned), for frame swaps. */
+  dirImage?: Phaser.GameObjects.Image;
 }
 
 class WorldScene extends Phaser.Scene {
@@ -168,6 +218,8 @@ class WorldScene extends Phaser.Scene {
   private zoneGraphics?: Phaser.GameObjects.Graphics;
   /** floors (tileset OR programmatic noir) are built once into depth-0 objects. */
   private floorsBuilt = false;
+  /** stable npcId → assigned PixelLab slug (cosmetic; computed once in preload). */
+  private npcSlugs = new Map<string, string>();
   private npcSprites: NpcSprite[] = [];
   private activeZone: string | null = null;
   private tick = 0;
@@ -175,6 +227,8 @@ class WorldScene extends Phaser.Scene {
 
   // ── avatar (Pillar 3) ──
   private avatar?: Phaser.GameObjects.Container;
+  /** the avatar's directional PixelLab sprite (when its art shipped), for frame swaps. */
+  private avatarDirImage?: Phaser.GameObjects.Image;
   /** the avatar's current integer cell — the source we tween FROM (cosmetic). */
   private avatarCell: Cell = { col: 0, row: 0 };
   /** the avatar's LOGICAL zone — the only thing perception reads. */
@@ -215,7 +269,45 @@ class WorldScene extends Phaser.Scene {
     } catch {
       /* loader unavailable — the world renders on the programmatic fallback */
     }
-    // Per-character portraits (these PNGs DO exist) so NPCs/avatar render as sprites.
+    // PixelLab directional CHARACTER sprites + Wang tilesets ("Best Use of Phaser"
+    // payoff). Each NPC gets a STABLE, deterministic slug (hash of npcId over the
+    // PRNG — never RNG/Date.now) so it shows the same sprite every run; `detective`
+    // is reserved for the player. Tilesets map to zones by zone index. Every queue is
+    // guarded: an absent slug/zone simply isn't loaded → circle/noir-floor fallback.
+    this.assignPixelArt();
+    try {
+      // 8-direction frames for each assigned NPC slug + the player.
+      const slugsToLoad = new Set<string>(this.npcSlugs.values());
+      if (spriteSlugPresent(PLAYER_SPRITE_SLUG)) slugsToLoad.add(PLAYER_SPRITE_SLUG);
+      for (const slug of slugsToLoad) {
+        for (const dir of SPRITE_DIRS) {
+          const key = spriteFrameKey(slug, dir);
+          if (this.textures.exists(key)) continue;
+          const url = spriteFrameUrl(slug, dir);
+          if (url) this.load.image(key, url);
+        }
+      }
+    } catch {
+      /* loader/art unavailable — NPCs/avatar fall back to circle Graphics */
+    }
+    try {
+      // Wang tileset PNGs for whichever zones got an assigned tileset slug.
+      const tilesetSlugs = new Set<string>();
+      this.view.map.zones.forEach((_, i) => {
+        const slug = tilesetSlugForZoneIndex(i);
+        if (slug) tilesetSlugs.add(slug);
+      });
+      for (const slug of tilesetSlugs) {
+        const key = wangTilesetKey(slug);
+        if (this.textures.exists(key)) continue;
+        const url = wangTilesetUrl(slug);
+        if (url) this.load.image(key, url);
+      }
+    } catch {
+      /* loader/art unavailable — zones fall back to the programmatic noir floor */
+    }
+    // Per-character PORTRAITS (these PNGs also exist) — used as the secondary sprite
+    // fallback when a character's directional art is absent (between circle & full).
     try {
       for (const npc of this.view.npcs) {
         const key = npcPortraitKey(npc.id);
@@ -237,6 +329,30 @@ class WorldScene extends Phaser.Scene {
       });
     } catch {
       /* no-op */
+    }
+  }
+
+  /**
+   * Deterministically assign each NPC a PixelLab character slug. The index is a
+   * STABLE hash of the npcId over the project PRNG (CLAUDE.md determinism invariant —
+   * never Math.random/Date.now), so within a run a given NPC always shows the same
+   * sprite, and `detective` stays reserved for the player. To reduce collisions we
+   * derive a per-NPC base offset from the npcId hash, then walk the available pool;
+   * if the pool is smaller than the cast, repeats are intentional and stable.
+   *
+   * COSMETIC-FX GUARD: slug selection is decorative only — never read by game logic.
+   */
+  private assignPixelArt(): void {
+    if (this.npcSlugs.size > 0) return; // idempotent
+    const npcs = this.view.npcs;
+    for (let i = 0; i < npcs.length; i++) {
+      const npc = npcs[i];
+      if (!npc) continue;
+      // Stable index: hash(dailySeed|npcId) keeps it reproducible AND spreads the
+      // assignment, falling back to array order inside npcSpriteSlugForIndex.
+      const h = hashSeed(`${this.view.dailySeed}|sprite|${npc.id}`);
+      const slug = npcSpriteSlugForIndex(h + i);
+      if (slug) this.npcSlugs.set(npc.id, slug);
     }
   }
 
@@ -368,22 +484,108 @@ class WorldScene extends Phaser.Scene {
   private drawZoneFloors(): void {
     if (this.floorsBuilt) return;
     this.floorsBuilt = true;
+    // Stable zone-index lookup for deterministic tileset assignment (array order).
+    const zoneIndex = new Map<string, number>();
+    this.view.map.zones.forEach((z, i) => zoneIndex.set(z.id, i));
     for (const zr of this.zoneRects.values()) {
-      const tileKey = tilesetKey(zr.zone.id);
       let rendered = false;
+      // 1) PREFERRED: real PixelLab Wang tileset, autotiled across the zone floor.
       try {
-        if (this.textures.exists(tileKey)) {
-          this.add
-            .tileSprite(zr.px, zr.py, zr.pw, zr.ph, tileKey)
-            .setOrigin(0, 0)
-            .setDepth(-1);
-          rendered = true;
+        const slug = tilesetSlugForZoneIndex(zoneIndex.get(zr.zone.id) ?? 0);
+        if (slug && this.textures.exists(wangTilesetKey(slug))) {
+          rendered = this.drawWangFloor(zr, slug);
         }
       } catch {
-        /* tileSprite unavailable — fall through to the programmatic floor */
+        /* Wang render unavailable — fall through */
       }
+      // 2) Legacy placeholder tileset (flat tiled fill) if a Wang floor didn't draw.
+      if (!rendered) {
+        const tileKey = tilesetKey(zr.zone.id);
+        try {
+          if (this.textures.exists(tileKey)) {
+            this.add
+              .tileSprite(zr.px, zr.py, zr.pw, zr.ph, tileKey)
+              .setOrigin(0, 0)
+              .setDepth(-1);
+            rendered = true;
+          }
+        } catch {
+          /* tileSprite unavailable — fall through to the programmatic floor */
+        }
+      }
+      // 3) FALLBACK: programmatic Cold-Noir floor (always available).
       if (!rendered) this.drawNoirFloor(zr);
     }
+  }
+
+  /**
+   * Draw a zone's floor by AUTOTILING its assigned PixelLab Wang tileset. The
+   * tileset PNG is a 4×4 grid of 16 corner-Wang tiles (16×16 each); the JSON metadata
+   * pins each tile's source rect (wang.ts). We sample an all-lower terrain field
+   * (the base floor) so every cell resolves to the base tile — the cheapest correct
+   * autotiling — and blit each 16×16 source tile across the zone bounds via a
+   * TileSprite whose frame is cropped to the base tile, plus a deterministic accent
+   * row of the all-upper tile (rug/puddle) so the art reads richer than a flat fill.
+   *
+   * Returns true iff it drew something. Deterministic & integer-only; cosmetic only.
+   */
+  private drawWangFloor(zr: ZoneRect, slug: string): boolean {
+    const key = wangTilesetKey(slug);
+    let atlas: WangAtlas;
+    try {
+      atlas = buildWangAtlas(wangTilesetMeta(slug) as WangTilesetMeta | undefined);
+    } catch {
+      return false;
+    }
+    const tile = atlas.tileSize || 16;
+    // Source rect for the all-lower (base) floor tile and the all-upper accent tile.
+    const baseRect = wangRectForCorners(atlas, cornersAt(0, 0, flatLowerField));
+    const upperField = (): "upper" => "upper";
+    const accentRect = wangRectForCorners(atlas, cornersAt(0, 0, () => upperField()));
+
+    // A cropped frame name per source rect so a TileSprite repeats just THAT 16×16
+    // tile (Phaser frames are immutable once added; guard duplicate adds).
+    const addFrame = (name: string, r: { x: number; y: number; width: number; height: number }): boolean => {
+      try {
+        const tex = this.textures.get(key);
+        if (!tex) return false;
+        if (!tex.has(name)) tex.add(name, 0, r.x, r.y, r.width, r.height);
+        return tex.has(name);
+      } catch {
+        return false;
+      }
+    };
+    const baseFrame = `${slug}:base`;
+    if (!addFrame(baseFrame, baseRect)) return false;
+
+    try {
+      // Base floor: tile the all-lower frame across the whole zone (depth -1).
+      this.add
+        .tileSprite(zr.px, zr.py, zr.pw, zr.ph, key, baseFrame)
+        .setOrigin(0, 0)
+        .setDepth(-1);
+    } catch {
+      return false;
+    }
+
+    // Deterministic accent band of the upper tile (e.g. an art-deco rug strip down
+    // the room) — purely decorative, integer-placed, never RNG. Drawn just above the
+    // base (still under the stroke layer at depth 0).
+    const accentFrame = `${slug}:accent`;
+    if (accentRect !== baseRect && addFrame(accentFrame, accentRect)) {
+      const bandH = Math.min(tile * 2, Math.floor(zr.ph / 3));
+      const bandY = zr.py + Math.floor((zr.ph - bandH) / 2);
+      try {
+        this.add
+          .tileSprite(zr.px + tile, bandY, Math.max(0, zr.pw - tile * 2), bandH, key, accentFrame)
+          .setOrigin(0, 0)
+          .setDepth(-1)
+          .setAlpha(0.85);
+      } catch {
+        /* accent is optional — base floor already drew */
+      }
+    }
+    return true;
   }
 
   /**
@@ -520,6 +722,42 @@ class WorldScene extends Phaser.Scene {
     return this.add.circle(0, 0, radius, fill, 1).setStrokeStyle(2, stroke, 1);
   }
 
+  /**
+   * Build a DIRECTIONAL PixelLab character sprite body (8-way). Returns the south
+   * (idle) Image scaled to `targetH` if the slug's south frame loaded, ELSE null so
+   * the caller falls back to a portrait sprite or the circle. Cosmetic only — the
+   * actor's logical position stays its container cell; the facing frame is decorative.
+   */
+  private makeDirSpriteBody(slug: string | undefined, targetH: number): Phaser.GameObjects.Image | null {
+    if (!slug) return null;
+    try {
+      const key = spriteFrameKey(slug, "south");
+      if (!this.textures.exists(key)) return null;
+      const img = this.add.image(0, 0, key);
+      const h = img.height || targetH;
+      img.setScale(targetH / h);
+      img.setOrigin(0.5, 0.82); // feet near the cell
+      return img;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Swap a directional sprite to the frame nearest a movement heading (dcol, drow).
+   * Idle (0,0) → south. Guarded: a missing frame leaves the current one. Cosmetic.
+   */
+  private faceDirSprite(img: Phaser.GameObjects.Image | undefined, slug: string | undefined, dcol: number, drow: number): void {
+    if (!img || !slug) return;
+    try {
+      const dir = headingToDir(dcol, drow);
+      const key = spriteFrameKey(slug, dir);
+      if (this.textures.exists(key) && img.texture.key !== key) img.setTexture(key);
+    } catch {
+      /* keep current frame */
+    }
+  }
+
   private placeNpcs(map: MapDef): void {
     for (const npc of this.view.npcs) {
       const home = this.zoneRects.get(npc.homeZone);
@@ -528,8 +766,11 @@ class WorldScene extends Phaser.Scene {
         ? { x: home.px + home.pw / 2, y: home.py + home.ph / 2 }
         : cellCenter(grid, 0, 0);
 
-      // Render a real portrait sprite when its art loaded; else the amber circle.
-      const body = this.makeActorBody(npcPortraitKey(npc.id), NPC_SPRITE_H, NPC_RADIUS, COL_NPC, COL_NPC_STROKE);
+      // PREFER the 8-direction PixelLab sprite; else the portrait; else the amber circle.
+      const slug = this.npcSlugs.get(npc.id);
+      const dirBody = this.makeDirSpriteBody(slug, NPC_DIR_SPRITE_H);
+      const body =
+        dirBody ?? this.makeActorBody(npcPortraitKey(npc.id), NPC_SPRITE_H, NPC_RADIUS, COL_NPC, COL_NPC_STROKE);
       enableLighting(body);
       const labelY = body instanceof Phaser.GameObjects.Image ? body.displayHeight / 2 + 2 : NPC_RADIUS + 2;
       const label = this.add
@@ -550,7 +791,13 @@ class WorldScene extends Phaser.Scene {
         this.handlers.onApproachNpc(npc.id);
       });
 
-      this.npcSprites.push({ view: npc, container, lastCol: -1, lastRow: -1 });
+      this.npcSprites.push({
+        view: npc,
+        container,
+        lastCol: -1,
+        lastRow: -1,
+        ...(dirBody ? { slug, dirImage: dirBody } : {}),
+      });
     }
   }
 
@@ -564,8 +811,11 @@ class WorldScene extends Phaser.Scene {
     this.avatarZoneId = firstZone?.id ?? null;
 
     const center = cellCenter(grid, this.avatarCell.col, this.avatarCell.row);
-    // Render the detective as a portrait sprite when its art loaded; else the pale disc.
-    const body = this.makeActorBody(AVATAR_PORTRAIT_KEY, AVATAR_SPRITE_H, AVATAR_RADIUS, COL_AVATAR, COL_AVATAR_STROKE);
+    // PREFER the detective's 8-direction PixelLab sprite; else the portrait; else disc.
+    const dirBody = this.makeDirSpriteBody(PLAYER_SPRITE_SLUG, AVATAR_DIR_SPRITE_H);
+    const body =
+      dirBody ?? this.makeActorBody(AVATAR_PORTRAIT_KEY, AVATAR_SPRITE_H, AVATAR_RADIUS, COL_AVATAR, COL_AVATAR_STROKE);
+    if (dirBody) this.avatarDirImage = dirBody;
     enableLighting(body);
     const ring = this.add.circle(0, 0, AVATAR_RADIUS + 5, COL_AVATAR, 0).setStrokeStyle(1, COL_AVATAR_STROKE, 0.5);
     this.avatar = this.add.container(center.x, center.y, [ring, body]).setDepth(6);
@@ -634,6 +884,8 @@ class WorldScene extends Phaser.Scene {
   private stepAvatarTo(cell: Cell, throttle: boolean): void {
     if (!this.avatar) return;
     if (throttle && this.avatarTween && this.avatarTween.isPlaying()) return;
+    // Face the PixelLab sprite toward the movement heading (idle faces south).
+    this.faceDirSprite(this.avatarDirImage, PLAYER_SPRITE_SLUG, cell.col - this.avatarCell.col, cell.row - this.avatarCell.row);
     this.avatarCell = cell;
     // SOUND: a soft footstep per cell step (silent no-op until sfx-footstep.mp3 lands).
     try {
@@ -705,6 +957,15 @@ class WorldScene extends Phaser.Scene {
 
       const cell = logicalCell(grid, zone, this.view.dailySeed, sprite.view.id, this.tick);
       if (cell.col === sprite.lastCol && cell.row === sprite.lastRow) continue;
+      // Face the PixelLab sprite toward its heading; the initial placement (lastCol<0)
+      // keeps the south idle frame rather than reading a bogus heading.
+      const hadPrev = sprite.lastCol >= 0 && sprite.lastRow >= 0;
+      this.faceDirSprite(
+        sprite.dirImage,
+        sprite.slug,
+        hadPrev ? cell.col - sprite.lastCol : 0,
+        hadPrev ? cell.row - sprite.lastRow : 0,
+      );
       sprite.lastCol = cell.col;
       sprite.lastRow = cell.row;
 
