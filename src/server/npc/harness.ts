@@ -16,7 +16,7 @@
 import type { Fact, Npc, Predicate, SliceEntry } from "../../shared/case.js";
 import type { FacultyId, FacultyLevels, TellSignal } from "../../shared/api.js";
 import type { LlmProvider } from "../llm/provider.js";
-import { rngFromString } from "../../shared/prng.js";
+import { seededPick } from "../../shared/prng.js";
 import type { PersonaSkill } from "./personas/types.js";
 import { getPersonaSkill } from "./personas/registry.js";
 import { pickDailyMood } from "./personas/overlay.js";
@@ -336,9 +336,7 @@ export function capReply(text: string, maxSentences = 2): string {
 
 /** Deterministically pick one phrasebook interjection (guilt-blind; integer-pure). */
 function pickInterjection(culture: NonNullable<PersonaSkill["culture"]>, runSalt: string, npcId: string): string | undefined {
-  if (!culture.phrasebook.length) return undefined;
-  const i = rngFromString(`xlate:${runSalt}:${npcId}`).int(culture.phrasebook.length);
-  return culture.phrasebook[i];
+  return seededPick(`xlate:${runSalt}:${npcId}`, culture.phrasebook);
 }
 
 /**

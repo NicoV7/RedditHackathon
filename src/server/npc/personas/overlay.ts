@@ -6,14 +6,12 @@
  * — it has no access to killer identity or the slice, and every principal gets a
  * mood, so the overlay can never single out the killer. Integer-pure (mulberry32).
  */
-import { rngFromString } from "../../../shared/prng.js";
+import { seededPick } from "../../../shared/prng.js";
 import type { PersonaSkill } from "./types.js";
 
 /** Deterministically choose tonight's disposition for this NPC. `runSalt` is the
  *  per-instance seed (killer-independent). Returns undefined if the skill has no
  *  mood pool. */
 export function pickDailyMood(skill: PersonaSkill, runSalt: string): string | undefined {
-  if (!skill.dailyMoods.length) return undefined;
-  const i = rngFromString(`mood:${runSalt}:${skill.npcId}`).int(skill.dailyMoods.length);
-  return skill.dailyMoods[i];
+  return seededPick(`mood:${runSalt}:${skill.npcId}`, skill.dailyMoods);
 }

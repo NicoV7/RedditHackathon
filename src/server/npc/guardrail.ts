@@ -14,7 +14,7 @@
  *  - Deterministic: deflection choice is integer-pure (mulberry32 over npc.id).
  */
 import type { Npc } from "../../shared/case.js";
-import { rngFromString } from "../../shared/prng.js";
+import { seededPick } from "../../shared/prng.js";
 import type { PersonaSkill } from "./personas/types.js";
 import { SUSPECT_NAMES } from "./personas/cast.js";
 
@@ -74,10 +74,7 @@ function containsWord(text: string, word: string): boolean {
 
 /** Deterministic in-character deflection (or a neutral fallback when no skill). */
 function pickDeflection(npc: Npc, skill: PersonaSkill | undefined): string {
-  const templates = skill?.boundaries.deflectionTemplates ?? [];
-  if (!templates.length) return "They look away and say nothing of use.";
-  const i = rngFromString(`deflect:${npc.id}`).int(templates.length);
-  return templates[i]!;
+  return seededPick(`deflect:${npc.id}`, skill?.boundaries.deflectionTemplates ?? []) ?? "They look away and say nothing of use.";
 }
 
 /**

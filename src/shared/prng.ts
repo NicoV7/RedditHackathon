@@ -60,3 +60,12 @@ export function mulberry32(seed: number): Rng {
 export function rngFromString(seed: string): Rng {
   return mulberry32(hashSeed(seed));
 }
+
+/**
+ * Deterministically pick one element from `items` using a namespaced string seed.
+ * Integer-pure (mulberry32). Returns `undefined` for an empty array. The single
+ * home for the "seeded pick from an array" idiom (mood / interjection / deflection).
+ */
+export function seededPick<T>(seedKey: string, items: readonly T[]): T | undefined {
+  return items.length ? items[rngFromString(seedKey).int(items.length)] : undefined;
+}
