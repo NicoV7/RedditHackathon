@@ -18,6 +18,9 @@ export function validateInstance(instance: CaseInstance): ValidationResult {
 
   // 1. Structural sanity.
   if (suspectIds.length === 0) return { ok: false, reason: "no suspects" };
+  // Anti-spoiler: a single-suspect case makes the killer the SOLE lie-tell bearer
+  // (no innocent to mirror the deception), a 100% fingerprint. A mystery needs >=2.
+  if (suspectIds.length < 2) return { ok: false, reason: "too few suspects (anti-spoiler needs >= 2)" };
   if (suspectIds.length > MAX_SUSPECTS)
     return { ok: false, reason: `>${MAX_SUSPECTS} suspects` };
   if (new Set(suspectIds).size !== suspectIds.length)
