@@ -121,6 +121,9 @@ export interface Persona {
   name: string;
   blurb: string;
   voice: string;
+  /** locked role (barkeep, pianist, accountant…) — drives the NPC's map station + prop
+   *  (Part 6.4) and flavor. Cosmetic: never read by the validator/solver. */
+  occupation?: string;
 }
 export interface Npc {
   id: NpcId;
