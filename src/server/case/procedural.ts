@@ -36,14 +36,14 @@ import type {
   Zone,
 } from "../../shared/case.js";
 import { rngFromString, type Rng } from "../../shared/prng.js";
+import { SUSPECT_NAMES, WITNESS_NAMES } from "../npc/personas/cast.js";
 
 const SETTINGS = ["The Drowned Lily", "the Blue Hour speakeasy", "the Velvet Drown"];
 const VICTIMS = ["Marco \"the Ledger\" Bellandi", "Sal the fence", "the bootlegger Quinn"];
 // The Drowned Lily cast — these names match the portrait slugs in src/client/ui/portraits.ts.
-const NAMES = [
-  "Lola Marsh", "Don Vittorio", "Frankie Conti", "Sil Greco", "Det. Halloran",
-  "Nell Carraway", "Harlan", "Mr. Ash", "Augie Doyle", "Old Cobb", "Birdie",
-];
+// The suspect pool + witness pool are the single source of truth in npc/personas/cast.ts, so
+// the generator and the PersonaSkill registry can never drift on who is suspect-eligible.
+const NAMES = [...SUSPECT_NAMES, ...WITNESS_NAMES];
 /** Per-character sin-themed flavor; falls back to a generic line for any other name. */
 const PERSONAS: Record<string, { blurb: string; voice: string }> = {
   "Lola Marsh": { blurb: "The Lily's sultry headliner. They whisper her sin is Lust.", voice: "sultry" },
@@ -251,8 +251,10 @@ export function generateTemplate(dailySeed: string, opts?: { suspects?: number; 
   const nSuspects = opts?.suspects ?? 4 + rng.int(3); // 4–6 (≤8)
   const nExtras = opts?.extras ?? 6 + rng.int(5); // supporting/ambient → lean ~10–15 total
 
-  const suspectIds: SuspectId[] = names.slice(0, nSuspects);
-  const extraIds = names.slice(nSuspects, nSuspects + nExtras);
+  // Suspects are drawn ONLY from the suspect-eligible pool, so each has an authored
+  // PersonaSkill; witnesses (Old Cobb/Birdie/Harlan) are never principals (stay scripted).
+  const suspectIds: SuspectId[] = names.filter((n) => SUSPECT_NAMES.includes(n)).slice(0, nSuspects);
+  const extraIds = names.filter((n) => !suspectIds.includes(n)).slice(0, nExtras);
 
   const mkNpc = (id: string, tier: Npc["tier"]): Npc => {
     const home = rng.pick(zoneIds);

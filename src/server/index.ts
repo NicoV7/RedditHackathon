@@ -16,6 +16,8 @@ import type * as Api from "../shared/api.js";
 import { drawInstance, generateTemplate } from "./case/procedural.js";
 import { runNpcTurn, type MemoryEvent } from "./npc/harness.js";
 import { MockProvider, type LlmProvider } from "./llm/provider.js";
+import { LocalTranslator, type Translator } from "./translate/translator.js";
+import { translateCached } from "./translate/cache.js";
 import type { RedisLike } from "./redis/redis.js";
 import { FakeRedis, TTL_30D } from "./redis/redis.js";
 import { accuse as sessionAccuse } from "./game/session.js";
@@ -48,13 +50,19 @@ export type DeriveInstanceFn = (dailySeed: string, playerId: string) => { templa
 export interface ServerDeps {
   redis: RedisLike;
   provider: LlmProvider;
+  /** Optional cultural-translation backend (Workstream C). Default = offline LocalTranslator. */
+  translator?: Translator;
   /** Optional instance-derivation override (test seam). Default = real generator. */
   deriveInstance?: DeriveInstanceFn;
 }
 
 /** Default local deps (sandbox/dev). Devvit runtime injects real redis + key. */
 export function defaultDeps(): ServerDeps {
-  return { redis: new FakeRedis(), provider: new MockProvider((r) => `(${r.user.slice(0, 20)}…) I really couldn't say.`) };
+  return {
+    redis: new FakeRedis(),
+    provider: new MockProvider((r) => `(${r.user.slice(0, 20)}…) I really couldn't say.`),
+    translator: new LocalTranslator(),
+  };
 }
 
 function defaultDeriveInstance(dailySeed: string, playerId: string): { template: CaseTemplate; instance: CaseInstance } {
@@ -218,6 +226,13 @@ export function createHandlers(deps: ServerDeps) {
       const logged = await recentEventsForNpc(deps.redis, playerId, instance.templateId, npc.id);
       const memoryEvents = logged.map(toMemoryEvent);
 
+      // Cached cultural-translation closure (Workstream C). Bound to NPC phrases ONLY
+      // inside the harness — the player `message` is NEVER passed here (compliance).
+      const translator = deps.translator;
+      const translate = translator
+        ? (text: string, targetLang: string) => translateCached(deps.redis, translator, { text, targetLang })
+        : undefined;
+
       const turn = await runNpcTurn({
         npc,
         factById,
@@ -225,6 +240,9 @@ export function createHandlers(deps: ServerDeps) {
         serverRevealedClueIds: myClues.map((c) => c.id),
         faculties: detective.faculties,
         memoryEvents,
+        // per-instance, killer-independent salt for the guilt-blind daily-mood overlay.
+        runSalt: instance.instanceSeed,
+        translate,
         provider: deps.provider,
       });
 

@@ -56,6 +56,36 @@ export interface FacultyLevels {
   encyclopedia: number;
 }
 
+/** Player personality axes the Watcher infers from your behaviour (Part 5). Bipolar — a
+ *  negative score leans the first pole, positive the second. FLAVOR/identity only; never
+ *  gates solvability and never derived from the killer/solution. */
+export type TraitAxis =
+  | "ruthless_merciful"
+  | "methodical_reckless"
+  | "empathetic_cold"
+  | "skeptical_credulous"
+  | "bold_cautious";
+export type TraitPole =
+  | "ruthless" | "merciful"
+  | "methodical" | "reckless"
+  | "empathetic" | "cold"
+  | "skeptical" | "credulous"
+  | "bold" | "cautious";
+/** The Watcher's emergent portrait of the player; persisted + accumulated across days. */
+export interface TraitState {
+  /** signed score per axis (sign picks the pole; |score| ≥ threshold ⇒ revealed) */
+  scores: Partial<Record<TraitAxis, number>>;
+  /** poles revealed so far (the dossier) */
+  revealed: TraitPole[];
+}
+/** The Watcher's eerie one-line evaluation — templated or bounded-LLM-voiced, NEVER derived
+ *  from the killer/solution (only your behaviour summary). `intensity` is cosmetic (Part 5.4). */
+export interface WatcherLine {
+  pole?: TraitPole;
+  line: string;
+  intensity: number;
+}
+
 /** Persistent detective sheet (Redis `detective:{playerId}`, sliding ≤30d TTL). */
 export interface DetectiveState {
   faculties: FacultyLevels;
@@ -63,6 +93,8 @@ export interface DetectiveState {
   playStreak: number;
   solveStreak: number;
   unlocks: string[]; // e.g. "pressure", "magnifier", "hint"
+  /** the Watcher's emergent portrait of you (Part 5); accumulates across days */
+  traits?: TraitState;
 }
 
 export interface RevealedClue {
@@ -81,7 +113,7 @@ export interface StartCaseRequest { dailySeed: string; }
 export interface StartCaseResponse { view: ClientCaseView; }
 
 export interface InterrogateRequest { caseId: string; dailySeed: string; npcId: string; message: string; }
-export interface InterrogateResponse { reply: string; revealed: RevealedClue[]; moderated?: boolean; }
+export interface InterrogateResponse { reply: string; revealed: RevealedClue[]; moderated?: boolean; watcher?: WatcherLine; }
 
 export interface ExamineRequest { caseId: string; dailySeed: string; itemId: string; }
 export interface ExamineResponse { examineText: string; revealed: RevealedClue[]; }
@@ -125,6 +157,8 @@ export interface AccuseResponse {
     /** true ⇒ the player hadn't even tagged a killer (the other half of the gate). */
     killerTagged: boolean;
   };
+  /** the Watcher's closing evaluation of how you ran the case (cosmetic; Part 5). */
+  watcher?: WatcherLine;
 }
 
 // ── present an item to an NPC (B2a) ──

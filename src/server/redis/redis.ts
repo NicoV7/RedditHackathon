@@ -13,7 +13,9 @@ export interface ZMember {
 
 export interface RedisLike {
   get(key: string): Promise<string | null>;
-  set(key: string, value: string): Promise<void>;
+  /** Set a value, optionally with an atomic TTL (seconds) so a key can never exist
+   *  without an expiry — the Devvit adapter maps `{ expiration }` to its set option. */
+  set(key: string, value: string, opts?: { expiration?: number }): Promise<void>;
   incrBy(key: string, by: number): Promise<number>;
   hGet(key: string, field: string): Promise<string | null>;
   hSet(key: string, field: string, value: string): Promise<void>;
@@ -51,8 +53,9 @@ export class FakeRedis implements RedisLike {
   async get(key: string) {
     return this.str.get(key) ?? null;
   }
-  async set(key: string, value: string) {
+  async set(key: string, value: string, opts?: { expiration?: number }) {
     this.str.set(key, value);
+    if (opts?.expiration != null) this.ttls.set(key, opts.expiration); // atomic TTL
   }
   async incrBy(key: string, by: number) {
     const v = (Number(this.str.get(key) ?? "0") || 0) + by;

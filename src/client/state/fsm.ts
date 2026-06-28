@@ -17,6 +17,9 @@ import type {
   DetectiveState,
   FacultyLevels,
   TellSignal,
+  WatcherLine,
+  TraitState,
+  TraitPole,
 } from "../../shared/api.js";
 
 // ───────────────────────── Phases ─────────────────────────
@@ -67,6 +70,25 @@ export interface GameData {
    * Cosmetic only: never read by win/lose logic. The tell rides in on REVEAL_CLUES.
    */
   tells: Record<string, TellSignal>;
+  /**
+   * The Watcher's latest interjection, keyed by npcId (the dialogue it spoke into).
+   * It rides in on REVEAL_CLUES (interrogate) — see the `watcher` action field.
+   * FLAVOR/identity only (Part 5): never read by win/lose logic, never gates
+   * solvability. Server-authored prose; the client never derives a trait from it.
+   */
+  watcher: Record<string, WatcherLine>;
+  /**
+   * The Watcher's CLOSING line from the graded accusation (AccuseResponse.watcher),
+   * if any — drives the Resolution dossier reveal. Null until RESOLVED. Cosmetic.
+   */
+  watcherClosing: WatcherLine | null;
+  /**
+   * The Watcher's emergent portrait of the player (revealed trait poles + signed
+   * per-axis scores), carried off the persistent DetectiveState. FLAVOR/identity
+   * only: never gates solvability, never derived from the killer/solution. Null
+   * until the detective sheet loads (SET_DETECTIVE).
+   */
+  traits: TraitState | null;
   /**
    * true ⇒ the server REJECTED the last accusation as premature (gateNotMet).
    * Drives the Board's "need more evidence" prompt; cleared on the next accuse.
@@ -120,7 +142,15 @@ export type GameAction =
   | { type: "OPEN_BOARD" }
   | { type: "CLOSE_BOARD" } // Board → Exploring
   | { type: "ASKED" } // a question was sent (await started)
-  | { type: "REVEAL_CLUES"; clues: RevealedClue[]; fromItemId?: string }
+  | {
+      // clues revealed by an interrogate/examine turn. `watcher` (interrogate only)
+      // rides in here — the Watcher's interjection for the active dialogue (Part 5);
+      // FLAVOR/identity only, never read by win/lose logic.
+      type: "REVEAL_CLUES";
+      clues: RevealedClue[];
+      fromItemId?: string;
+      watcher?: WatcherLine;
+    }
   | {
       // a present-an-item-to-an-NPC result: reveal clues + record the lie-catch
       type: "PRESENT_RESULT";
@@ -149,6 +179,9 @@ function carry(s: GameData): GameData {
     playerZone: s.playerZone,
     detective: s.detective,
     tells: s.tells,
+    watcher: s.watcher,
+    watcherClosing: s.watcherClosing,
+    traits: s.traits,
     needMoreEvidence: s.needMoreEvidence,
   };
 }
@@ -210,6 +243,9 @@ export function reducer(state: GameState, action: GameAction): GameState {
         playerZone: null,
         detective: null,
         tells: {},
+        watcher: {},
+        watcherClosing: null,
+        traits: null,
         needMoreEvidence: false,
       };
     }
@@ -265,7 +301,13 @@ export function reducer(state: GameState, action: GameAction): GameState {
       // When in dialogue, the active NPC is the fallback source for the tell.
       const fallbackNpcId = state.phase === "Dialogue" ? state.npcId : undefined;
       const tells = foldTells(state.tells, action.clues, fallbackNpcId);
-      return { ...state, clues, inventory, boardUnlocked, tells } as GameState;
+      // the Watcher's interjection (interrogate only) is keyed to the active
+      // dialogue NPC; latest wins. FLAVOR-only — never read by win/lose logic.
+      const watcher =
+        action.watcher && fallbackNpcId
+          ? { ...state.watcher, [fallbackNpcId]: action.watcher }
+          : state.watcher;
+      return { ...state, clues, inventory, boardUnlocked, tells, watcher } as GameState;
     }
 
     case "PRESENT_RESULT": {
@@ -285,7 +327,10 @@ export function reducer(state: GameState, action: GameAction): GameState {
 
     case "SET_DETECTIVE": {
       if (!isLoaded(state)) return state;
-      return { ...state, detective: action.detective } as GameState;
+      // carry the Watcher's emergent portrait (revealed trait poles) off the sheet
+      // so the Dossier can render it. FLAVOR/identity only; never gates solvability.
+      const traits = action.detective.traits ?? state.traits;
+      return { ...state, detective: action.detective, traits } as GameState;
     }
 
     case "TAG_NPC": {
@@ -324,7 +369,14 @@ export function reducer(state: GameState, action: GameAction): GameState {
 
     case "RESOLVED": {
       if (state.phase !== "Accusing") return state;
-      return { phase: "Resolved", result: action.result, ...carry(state) };
+      // the Watcher's closing line rides in on the graded AccuseResponse (Part 5);
+      // surface it for the Resolution dossier reveal. FLAVOR-only.
+      return {
+        phase: "Resolved",
+        result: action.result,
+        ...carry(state),
+        watcherClosing: action.result.watcher ?? state.watcherClosing,
+      };
     }
 
     default: {
@@ -404,4 +456,31 @@ export function latestTell(s: GameData, npcId: string): TellSignal | null {
 /** Convenience: the player's current faculty levels (or null until loaded). */
 export function faculties(s: GameData): FacultyLevels | null {
   return s.detective?.faculties ?? null;
+}
+
+/**
+ * The Watcher's latest interjection for an NPC's dialogue, if any (Part 5.5 — the
+ * cold/eldritch rail in Interrogation). FLAVOR/identity only: never read by
+ * win/lose logic. Mirrors `latestTell` but for the Watcher voice.
+ */
+export function latestWatcher(s: GameData, npcId: string): WatcherLine | null {
+  return s.watcher[npcId] ?? null;
+}
+
+/**
+ * The Watcher's emergent self-portrait of the player (Part 5.5 Dossier). Pure
+ * projection over the loaded `traits`: the revealed poles (the dossier so far) plus
+ * the signed per-axis scores. FLAVOR/identity only — never gates solvability and
+ * never derived from the killer/solution. `revealed` is empty until the first pole
+ * crosses its threshold; `scores` is empty until the sheet loads.
+ */
+export interface DossierView {
+  /** poles the Watcher has surfaced about you so far (in reveal order). */
+  revealed: TraitPole[];
+  /** signed score per axis (sign picks the pole; |score| ≥ threshold ⇒ revealed). */
+  scores: TraitState["scores"];
+}
+export function dossier(s: GameData): DossierView {
+  const t = s.traits;
+  return { revealed: t?.revealed ?? [], scores: t?.scores ?? {} };
 }
