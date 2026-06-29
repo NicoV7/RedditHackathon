@@ -43,6 +43,7 @@ import { createFx, type FxQuality, type ParlorFx } from "./fx.js";
 import { npcsInRoom, itemsInRoom, doorsFromRoom, doorEntryCell } from "./room.js";
 import { roomLayout, cellToWorldX, type Placement, type RoomLayout } from "./roomLayout.js";
 import { inputVector } from "./movement.js";
+import { nearestInteractable, type InteractCandidate, type InteractHit } from "./interact.js";
 
 // ── Lamplight Noir palette ──
 const COL_BG = 0x12_1c_1f; // deep backdrop behind rooms
@@ -65,6 +66,8 @@ const COL_DOOR_STROKE = 0x5a_4a_70;
 const GRAVITY_Y = 900; // px/s²
 const MOVE_SPEED = 170; // px/s horizontal run
 const JUMP_VELOCITY = 430; // px/s launch (≈ 6 cells of rise — clears the platforms)
+/** How close (px) the avatar must be to an interactable to surface its prompt. */
+const INTERACT_RANGE = 46;
 
 // ── Glyph / body sizing ──
 const AVATAR_BODY_W = 14;
@@ -82,6 +85,7 @@ const DEPTH_PLATFORM = 1;
 const DEPTH_GLYPH = 4;
 const DEPTH_NPC = 5;
 const DEPTH_AVATAR = 6;
+const DEPTH_UI = 20; // camera-pinned prompt + touch controls
 
 /** Per-character portrait texture key (cosmetic art cache; never read by logic). */
 function npcPortraitKey(npcId: string): string {
@@ -123,8 +127,19 @@ class WorldScene extends Phaser.Scene {
   private cursors?: Phaser.Types.Input.Keyboard.CursorKeys;
   private wasdKeys?: { left: Phaser.Input.Keyboard.Key; right: Phaser.Input.Keyboard.Key; up: Phaser.Input.Keyboard.Key };
   private jumpKey?: Phaser.Input.Keyboard.Key;
+  private interactKey?: Phaser.Input.Keyboard.Key;
   /** Perception light radius (cosmetic). Defaults to a small reveal halo. */
   private playerLightRadius = 90;
+
+  // ── proximity interaction + touch controls (PR2) ──
+  /** the active room's interactables, recomputed on each room build. */
+  private candidates: InteractCandidate[] = [];
+  /** the interactable currently in range (drives the prompt + the interact action). */
+  private currentHit: InteractHit | null = null;
+  /** camera-pinned proximity prompt — persists across room rebuilds. */
+  private promptLabel?: Phaser.GameObjects.Text;
+  /** on-screen touch state (mobile); merged with the keyboard each frame. */
+  private readonly touch = { left: false, right: false, jumpQueued: false };
 
   private readonly onReady?: () => void;
 
@@ -216,6 +231,7 @@ class WorldScene extends Phaser.Scene {
     this.activeZone = map.zones[0]?.id ?? null;
 
     this.spawnAvatar();
+    this.buildUi();
     this.buildRoom(this.activeZone ?? "");
     this.setupKeyboard();
 
@@ -235,15 +251,20 @@ class WorldScene extends Phaser.Scene {
 
     const c = this.cursors;
     const w = this.wasdKeys;
-    const left = Boolean(c?.left.isDown || w?.left.isDown);
-    const right = Boolean(c?.right.isDown || w?.right.isDown);
+    const left = Boolean(c?.left.isDown || w?.left.isDown) || this.touch.left;
+    const right = Boolean(c?.right.isDown || w?.right.isDown) || this.touch.right;
     const v = inputVector({ left, right });
     body.setVelocityX(v.dx * MOVE_SPEED);
 
-    if (this.jumpPressed() && body.blocked.down) body.setVelocityY(-JUMP_VELOCITY);
+    if ((this.jumpPressed() || this.consumeTouchJump()) && body.blocked.down) {
+      body.setVelocityY(-JUMP_VELOCITY);
+    }
 
     if (v.dx < 0) this.facing = "l";
     else if (v.dx > 0) this.facing = "r";
+
+    this.refreshNearest(body);
+    if (this.interactKey && Phaser.Input.Keyboard.JustDown(this.interactKey)) this.triggerInteract();
 
     this.syncAvatarArt();
     try {
@@ -256,6 +277,61 @@ class WorldScene extends Phaser.Scene {
   private jumpPressed(): boolean {
     const keys = [this.jumpKey, this.cursors?.up, this.wasdKeys?.up];
     return keys.some((k) => k !== undefined && Phaser.Input.Keyboard.JustDown(k));
+  }
+
+  /** One-shot read of a queued touch-jump (the on-screen ▲ button). */
+  private consumeTouchJump(): boolean {
+    if (!this.touch.jumpQueued) return false;
+    this.touch.jumpQueued = false;
+    return true;
+  }
+
+  // ── proximity interaction ──────────────────────────────────────────────────
+
+  /** Recompute the in-range interactable and refresh the prompt. Cosmetic affordance. */
+  private refreshNearest(body: Phaser.Physics.Arcade.Body): void {
+    this.currentHit = nearestInteractable(body.x, body.y, this.candidates, INTERACT_RANGE);
+    this.updatePrompt();
+  }
+
+  private updatePrompt(): void {
+    const label = this.promptLabel;
+    if (!label) return;
+    if (!this.currentHit) {
+      label.setVisible(false);
+      return;
+    }
+    label.setText(this.promptText(this.currentHit)).setVisible(true);
+  }
+
+  private promptText(hit: InteractHit): string {
+    if (hit.kind === "door") return `[E] Enter ${this.zoneName(hit.toZone)}`;
+    if (hit.kind === "npc") return `[E] Talk to ${this.npcName(hit.id)}`;
+    return "[E] Examine";
+  }
+
+  private zoneName(zoneId: string | undefined): string {
+    return this.view.map.zones.find((z) => z.id === zoneId)?.name ?? "next room";
+  }
+
+  private npcName(npcId: string): string {
+    return this.view.npcs.find((n) => n.id === npcId)?.name ?? "them";
+  }
+
+  /** Act on the in-range interactable (the E key, the ▲/E touch button, or a glyph tap). */
+  private triggerInteract(): void {
+    const hit = this.currentHit;
+    if (!hit) return;
+    if (hit.kind === "npc") {
+      this.handlers.onApproachNpc(hit.id);
+      return;
+    }
+    if (hit.kind === "item") {
+      this.handlers.onExamineItem(hit.id);
+      return;
+    }
+    const door = doorsFromRoom(this.view.map.doors, this.activeZone ?? "").find((d) => d.to === hit.toZone);
+    if (door) this.enterDoor(door);
   }
 
   // ── room building ───────────────────────────────────────────────────────
@@ -293,6 +369,13 @@ class WorldScene extends Phaser.Scene {
     this.drawBackdrop(layout, zone.name);
     this.buildTerrain(layout);
     for (const p of layout.placements) this.placeGlyph(p);
+    this.candidates = layout.placements.map((p) =>
+      p.toZone !== undefined
+        ? { id: p.id, kind: p.kind, x: p.x, y: p.surfaceY, toZone: p.toZone }
+        : { id: p.id, kind: p.kind, x: p.x, y: p.surfaceY },
+    );
+    this.currentHit = null;
+    this.updatePrompt();
 
     // Recreate the avatar↔terrain collider against this room's static blocks.
     this.groundCollider?.destroy();
@@ -656,8 +739,9 @@ class WorldScene extends Phaser.Scene {
         up: kb.addKey(Phaser.Input.Keyboard.KeyCodes.W),
       };
       this.jumpKey = kb.addKey(Phaser.Input.Keyboard.KeyCodes.SPACE);
+      this.interactKey = kb.addKey(Phaser.Input.Keyboard.KeyCodes.E);
     } catch {
-      /* keyboard unavailable (mobile) — touch controls land in the next slice */
+      /* keyboard unavailable (mobile) — the on-screen touch controls drive play */
     }
   }
 
@@ -690,6 +774,60 @@ class WorldScene extends Phaser.Scene {
   setQuality(level: FxQuality): void {
     this.quality = level;
     this.fx.setQuality(level);
+  }
+
+  // ── camera-pinned UI: proximity prompt + on-screen touch controls ──────────
+
+  /** Build the (once-only) prompt label + touch buttons; they persist across rooms. */
+  private buildUi(): void {
+    try {
+      this.promptLabel = this.add
+        .text(this.scale.width / 2, this.scale.height - 70, "", {
+          fontFamily: "monospace",
+          fontSize: "12px",
+          color: "#e8e0cf",
+          backgroundColor: "rgba(12,18,20,0.7)",
+          padding: { x: 6, y: 3 },
+        })
+        .setOrigin(0.5, 0.5)
+        .setScrollFactor(0)
+        .setDepth(DEPTH_UI)
+        .setVisible(false);
+    } catch {
+      /* text unavailable — proximity still works, just without the on-screen hint */
+    }
+
+    // On-screen controls (mobile-first; harmless alongside the keyboard on desktop).
+    const y = this.scale.height - 28;
+    this.makeTouchButton(30, y, "◄", () => (this.touch.left = true), () => (this.touch.left = false));
+    this.makeTouchButton(82, y, "►", () => (this.touch.right = true), () => (this.touch.right = false));
+    this.makeTouchButton(this.scale.width - 82, y, "E", () => this.triggerInteract());
+    this.makeTouchButton(this.scale.width - 30, y, "▲", () => (this.touch.jumpQueued = true));
+  }
+
+  /** A camera-pinned touch button (rect + glyph) wired to press/release callbacks. */
+  private makeTouchButton(x: number, y: number, label: string, onDown: () => void, onUp?: () => void): void {
+    try {
+      const size = 42;
+      const bg = this.add
+        .rectangle(x, y, size, size, 0x1b_2a_2e, 0.55)
+        .setStrokeStyle(1, 0x3d_5a_61, 0.8)
+        .setScrollFactor(0)
+        .setDepth(DEPTH_UI)
+        .setInteractive({ useHandCursor: true });
+      this.add
+        .text(x, y, label, { fontFamily: "monospace", fontSize: "16px", color: "#cfdddf" })
+        .setOrigin(0.5)
+        .setScrollFactor(0)
+        .setDepth(DEPTH_UI + 1);
+      bg.on(Phaser.Input.Events.GAMEOBJECT_POINTER_DOWN, onDown);
+      if (onUp) {
+        bg.on(Phaser.Input.Events.GAMEOBJECT_POINTER_UP, onUp);
+        bg.on(Phaser.Input.Events.GAMEOBJECT_POINTER_OUT, onUp);
+      }
+    } catch {
+      /* input/text unavailable — keyboard still drives play */
+    }
   }
 
   private teardown(): void {
