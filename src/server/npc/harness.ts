@@ -16,6 +16,11 @@
 import type { Fact, Npc, Predicate, SliceEntry } from "../../shared/case.js";
 import type { FacultyId, FacultyLevels, TellSignal } from "../../shared/api.js";
 import type { LlmProvider } from "../llm/provider.js";
+import { seededPick } from "../../shared/prng.js";
+import type { PersonaSkill } from "./personas/types.js";
+import { getPersonaSkill } from "./personas/registry.js";
+import { pickDailyMood } from "./personas/overlay.js";
+import { applyOutputGuardrail, GUILT_META } from "./guardrail.js";
 
 /**
  * A perception-gated memory event (the shape J1 / `metrics/events.ts` produces).
@@ -71,6 +76,17 @@ export interface NpcTurnInput {
   memoryEvents?: MemoryEvent[];
   /** the player's inner-voice Faculties — drives lie-tell visibility (server-side). */
   faculties?: FacultyLevels;
+  /**
+   * Per-instance salt for the guilt-blind daily-mood overlay (the instance seed).
+   * Killer-independent; principal-only. Absent ⇒ no overlay (legacy behavior).
+   */
+  runSalt?: string;
+  /**
+   * Injected, already-cached translator closure (Workstream C). Receives ONLY NPC
+   * interjection phrases — NEVER player text. Absent ⇒ no translation injection
+   * (legacy behavior). The server (index.ts) binds this to translateCached.
+   */
+  translate?: (text: string, targetLang: string) => Promise<string>;
   /** server-computed clue reveals for this turn — authoritative, not from the LLM */
   serverRevealedClueIds?: string[];
   /** pre-rendered answer (supporting chips / cached principal chips) */
@@ -92,14 +108,19 @@ export interface NpcTurnResult {
 }
 
 /** Render one slice entry to a neutral first-person knowledge line. No guilt info. */
-function renderSliceLine(entry: SliceEntry, factById: Map<string, Fact>): string {
+function renderSliceLine(entry: SliceEntry, factById: Map<string, Fact>, selfId: string): string {
   const f = factById.get(entry.factId);
   if (!f) return "";
-  const subjectIsSelf = false; // (harness doesn't need self-detection for Wave 1)
+  // ANTI-SPOILER: a suspect's OWN refuter (self-alibi) is NOT voiced in the prompt.
+  // The killer has no self-refuter by construction; rendering innocents' self-alibis
+  // would make the killer the UNIQUE suspect with no "You know: ... no opportunity"
+  // line — a deterministic guilt fingerprint in the prompt. Suppressing it makes the
+  // killer's self-line shape identical to the decoy innocents' (both pure deniers).
+  // The alibi stays discoverable structurally via the refuter clue in the clue graph.
+  if (f.subject === selfId && f.predicate.startsWith("refutes")) return "";
   const claim = `${f.subject} had ${f.predicate.replace(/^refutes/, "no ").toLowerCase()}`;
   // statedLie entries are voiced as the NPC's (false) claim — the harness does
   // not annotate truth value in the prompt, so it can't leak who lies/kills.
-  void subjectIsSelf;
   return entry.statedAs === "statedLie" ? `You insist: ${claim} is not true.` : `You know: ${claim}.`;
 }
 
@@ -151,19 +172,56 @@ export function selectMemoryLines(
 }
 
 /**
- * Assemble the system prompt from persona + slice ONLY. Deterministic and
- * solution-blind: depends solely on (npc, factById, memory).
- *
- * `memory` may be pre-rendered lines (legacy) and/or already-selected memory
- * lines from `selectMemoryLines`. The harness caps the total folded in.
+ * Fold a PersonaSkill into prompt lines GENERICALLY (iterate fields; no per-character
+ * code). Guilt-blind: composes only personality/culture/voice/boundaries + tonight's
+ * mood — never the slice, never the killer. `mood` is the per-run overlay.
  */
-export function assembleSystemPrompt(npc: Npc, factById: Map<string, Fact>, memory: string[] = []): string {
-  const knowledge = npc.slice.map((e) => renderSliceLine(e, factById)).filter(Boolean);
+function skillPromptLines(skill: PersonaSkill, mood?: string): string[] {
+  const rel = skill.relationships.map((r) => `${r.npcId} (${r.stance})`).join(", ");
+  const lines = [
+    `Background: ${skill.background.origin}; ${skill.background.occupationColor}. Era: ${skill.background.era}.`,
+    `Voice: ${skill.speech.register}. Verbal tics: ${skill.speech.tics.join("; ")}.`,
+    `Avoid anachronisms: ${skill.speech.forbidden.join(", ")}.`,
+    `Disposition: you are ${skill.disposition.cooperation}; under pressure, ${skill.disposition.underPressure}.`,
+    `People you may speak of: ${rel || "no one in particular"}. Do not invent or name anyone else.`,
+    `If pushed past what you would share, refuse in character: ${skill.boundaries.refusalStyle}.`,
+    `Answer ONLY from what you personally know.`,
+  ];
+  if (mood) lines.splice(lines.length - 1, 0, `Tonight you are ${mood}.`);
+  return lines;
+}
+
+/**
+ * Assemble the system prompt from persona + slice ONLY. Deterministic and
+ * solution-blind: depends solely on (npc, factById, memory, skill, runSalt).
+ *
+ * When a `skill` is present (principal with an authored agent), the fat persona is
+ * composed generically and the per-run mood overlay is applied. Without a skill the
+ * output is byte-identical to the legacy blurb/voice prompt. The slice lines and the
+ * "not omniscient / do not invent / two sentences" line stay in the same position,
+ * so the no-guilt-leak invariant is preserved verbatim.
+ */
+export function assembleSystemPrompt(
+  npc: Npc,
+  factById: Map<string, Fact>,
+  memory: string[] = [],
+  skill?: PersonaSkill,
+  runSalt?: string,
+): string {
+  const knowledge = npc.slice.map((e) => renderSliceLine(e, factById, npc.id)).filter(Boolean);
   const capped = memory.filter(Boolean).slice(0, MEMORY_MAX_EVENTS).map(clampLine);
   const mem = capped.length ? ["Recently, you observed (context only — do not invent beyond it):", ...capped.map((m) => `- ${m}`)] : [];
+  const persona = skill
+    ? [
+        `You are ${npc.persona.name}, ${npc.persona.blurb}`,
+        ...skillPromptLines(skill, runSalt ? pickDailyMood(skill, runSalt) : undefined),
+      ]
+    : [
+        `You are ${npc.persona.name}, ${npc.persona.blurb}`,
+        `Speak in a ${npc.persona.voice} manner. Answer ONLY from what you personally know.`,
+      ];
   return [
-    `You are ${npc.persona.name}, ${npc.persona.blurb}`,
-    `Speak in a ${npc.persona.voice} manner. Answer ONLY from what you personally know.`,
+    ...persona,
     `You are not omniscient. Do not invent facts. Keep replies to at most two sentences.`,
     ...knowledge,
     ...mem,
@@ -180,16 +238,22 @@ export function assembleSystemPrompt(npc: Npc, factById: Map<string, Fact>, memo
  *    `empathy` (emotional tell) with `drama` as the theatrical fallback.
  * The mapping is structural over the predicate; it never inspects guilt.
  */
-function facultyForLie(predicate: Predicate): { primary: FacultyId; line: string } {
-  switch (predicate) {
-    case "refutesMeans":
-    case "refutesOpportunity":
-      return { primary: "logic", line: "That alibi doesn't square with what you already know." };
-    case "means":
-      return { primary: "empathy", line: "A flicker of something — they're hiding how they know that." };
-    case "opportunity":
-      return { primary: "empathy", line: "Their account of where they were rings false." };
-  }
+function facultyForLie(predicate: Predicate, skill?: PersonaSkill): { primary: FacultyId; line: string } {
+  const base = ((): { primary: FacultyId; line: string } => {
+    switch (predicate) {
+      case "refutesMeans":
+      case "refutesOpportunity":
+        return { primary: "logic", line: "That alibi doesn't square with what you already know." };
+      case "means":
+        return { primary: "empathy", line: "A flicker of something — they're hiding how they know that." };
+      case "opportunity":
+        return { primary: "empathy", line: "Their account of where they were rings false." };
+    }
+  })();
+  // A skill may supply in-character tell PROSE for this predicate. The faculty
+  // mapping is unchanged — only the displayed line becomes character-specific.
+  const custom = skill?.tellLines[predicate];
+  return custom ? { primary: base.primary, line: custom } : base;
 }
 
 /** Per-faculty minimum level at which a tell becomes visible (server-side gate). */
@@ -221,6 +285,7 @@ export function computeLieTell(
   relevantEntries: SliceEntry[],
   faculties: FacultyLevels | undefined,
   factById: Map<string, Fact>,
+  skill?: PersonaSkill,
 ): TellSignal | null {
   if (!faculties) return null;
 
@@ -232,7 +297,7 @@ export function computeLieTell(
     if (entry.statedAs !== "statedLie") continue; // tells fire ONLY on structural lies
     const fact = factById.get(entry.factId);
     if (!fact) continue;
-    const { primary, line } = facultyForLie(fact.predicate);
+    const { primary, line } = facultyForLie(fact.predicate, skill);
     // Visible only if the player's faculty clears the gate. Drama can substitute
     // for empathy on emotional lies (theatrical read) at the same threshold.
     const facultyOptions: FacultyId[] = primary === "empathy" ? ["empathy", "drama"] : [primary];
@@ -269,6 +334,40 @@ export function capReply(text: string, maxSentences = 2): string {
   return parts.slice(0, maxSentences).join(" ");
 }
 
+/** Deterministically pick one phrasebook interjection (guilt-blind; integer-pure). */
+function pickInterjection(culture: NonNullable<PersonaSkill["culture"]>, runSalt: string, npcId: string): string | undefined {
+  return seededPick(`xlate:${runSalt}:${npcId}`, culture.phrasebook);
+}
+
+/**
+ * Cultural-translation injection (Workstream C). If the NPC has a `culture` profile
+ * AND a translator is injected, prepend a short translated interjection to the reply.
+ * Translates an NPC phrase ONLY — never player text. Any failure (no culture, no
+ * translator, a thrown translate) gracefully returns the untranslated English reply.
+ */
+async function injectInterjection(
+  raw: string,
+  skill: PersonaSkill | undefined,
+  runSalt: string | undefined,
+  npcId: string,
+  translate: NpcTurnInput["translate"],
+): Promise<string> {
+  if (!skill?.culture || !translate) return raw;
+  const phrase = pickInterjection(skill.culture, runSalt ?? "", npcId);
+  if (!phrase) return raw;
+  // Scan the ENGLISH SOURCE phrase (always scannable) before translating — the
+  // injected foreign-language text itself is NOT semantically leak-checkable by the
+  // English guardrail, so we vet the canonical source instead and refuse a phrase
+  // that trips the guilt/meta denylist (belt-and-suspenders for a future cloud backend).
+  if (GUILT_META.test(phrase)) return raw;
+  try {
+    const native = await translate(phrase, skill.culture.language);
+    return `«${native}» ${raw}`;
+  } catch {
+    return raw;
+  }
+}
+
 export async function runNpcTurn(input: NpcTurnInput): Promise<NpcTurnResult> {
   const revealedClueIds = input.serverRevealedClueIds ?? []; // ALWAYS server-authoritative
 
@@ -284,18 +383,28 @@ export async function runNpcTurn(input: NpcTurnInput): Promise<NpcTurnResult> {
   }
 
   // principal free-text: the ONLY runtime LLM path.
+  // Resolve this character's fat skill (undefined ⇒ legacy blurb/voice path).
+  const skill = getPersonaSkill(input.npc.id);
   // Fold legacy + structured memory into one bounded, ranked block.
   const structuredLines = selectMemoryLines(input.memoryEvents ?? [], input.playerMessage);
   const memoryLines = [...(input.memory ?? []), ...structuredLines];
-  const system = assembleSystemPrompt(input.npc, input.factById, memoryLines);
+  const system = assembleSystemPrompt(input.npc, input.factById, memoryLines, skill, input.runSalt);
   const raw = await input.provider.complete({ system, user: input.playerMessage, maxSentences: 2 });
+  // Cultural-translation injection (Workstream C): prepend a short native interjection.
+  // The English SOURCE phrase is guilt/meta-scanned inside injectInterjection (the
+  // foreign-language output cannot be semantically scanned by the English guardrail);
+  // the guardrail below still enforces the length backstop over the combined text.
+  const injected = await injectInterjection(raw, skill, input.runSalt, input.npc.id, input.translate);
+  // Server-authoritative OUTPUT guardrail (no-op without a skill): swaps an
+  // in-character deflection for any reply that trips a rule. Never alters reveals.
+  const guarded = applyOutputGuardrail(injected, input.npc, skill).reply;
 
   // Deterministic lie-tell over THIS NPC's slice + the player's faculties. The
   // whole slice is "relevant" for a free-text turn (the player asks broadly);
   // the structural `statedLie` gate is what fires the tell, not the prose.
-  const tell = computeLieTell(input.npc.slice, input.faculties, input.factById) ?? undefined;
+  const tell = computeLieTell(input.npc.slice, input.faculties, input.factById, skill) ?? undefined;
 
-  const result: NpcTurnResult = { reply: capReply(raw), revealedClueIds, usedLlm: true };
+  const result: NpcTurnResult = { reply: capReply(guarded), revealedClueIds, usedLlm: true };
   if (tell) result.tell = tell;
   return result;
 }
