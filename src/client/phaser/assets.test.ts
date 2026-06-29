@@ -25,6 +25,12 @@ import {
   overworldFrameUrl,
   overworldSlugPresent,
   availableOverworldSlugs,
+  mapTilesetKey,
+  mapTilesetUrl,
+  mapTilesetPresent,
+  mapTilesetMeta,
+  mapPropKey,
+  mapPropUrl,
 } from "./assets.js";
 
 // Zone ids must mirror src/server/case/procedural.ts ZONE_DEFS.
@@ -120,6 +126,21 @@ describe("overworld sprite set (side-scroll)", () => {
     expect(overworldFrameUrl("detective", "idle")).toBeUndefined();
     expect(overworldSlugPresent("detective")).toBe(false);
     expect(availableOverworldSlugs()).toEqual([]);
+  });
+});
+
+describe("map art (per-zone tileset + props)", () => {
+  it("derives stable, distinct keys for tilesets and props", () => {
+    expect(mapTilesetKey("bar")).toBe("maptiles:bar");
+    expect(mapPropKey("piano")).toBe("mapprop:piano");
+    expect(mapTilesetKey("bar")).not.toBe(mapPropKey("bar"));
+  });
+
+  it("resolves to undefined / absent when no map art is bundled (test env)", () => {
+    expect(mapTilesetUrl("bar")).toBeUndefined();
+    expect(mapTilesetPresent("bar")).toBe(false);
+    expect(mapTilesetMeta("bar")).toBeUndefined();
+    expect(mapPropUrl("piano")).toBeUndefined();
   });
 });
 

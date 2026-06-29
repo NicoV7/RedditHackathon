@@ -42,7 +42,11 @@ import {
   overworldFrameKey,
   overworldFrameUrl,
   type OverworldClip,
+  mapTilesetKey,
+  mapTilesetUrl,
+  mapTilesetMeta,
 } from "./assets.js";
+import { buildWangAtlas, wangRectForCorners, type WangAtlas, type WangTilesetMeta } from "./wang.js";
 import { createFx, type FxQuality, type ParlorFx } from "./fx.js";
 import { npcsInRoom, itemsInRoom, doorsFromRoom, doorEntryCell } from "./room.js";
 import { roomLayout, cellToWorldX, type Placement } from "./roomLayout.js";
@@ -92,6 +96,10 @@ const DEPTH_GLYPH = 4;
 const DEPTH_NPC = 5;
 const DEPTH_AVATAR = 6;
 const DEPTH_UI = 20; // camera-pinned prompt + touch controls
+
+// Cropped frame names registered on a zone's map-tileset texture (Wang fill + top edge).
+const TILE_FRAME_FILL = "fill";
+const TILE_FRAME_TOP = "top";
 
 /** Per-character portrait texture key (cosmetic art cache; never read by logic). */
 function npcPortraitKey(npcId: string): string {
@@ -206,6 +214,16 @@ class WorldScene extends Phaser.Scene {
       }
     } catch {
       /* loader/art unavailable — actors fall back to blobs */
+    }
+    try {
+      // Per-zone sidescroller map TILESET (the ground/platform skin); absent → colored blocks.
+      for (const zone of this.view.map.zones) {
+        const key = mapTilesetKey(zone.id);
+        const url = mapTilesetUrl(zone.id);
+        if (url && !this.textures.exists(key)) this.load.image(key, url);
+      }
+    } catch {
+      /* loader/art unavailable — terrain falls back to colored blocks */
     }
     try {
       this.load.once(Phaser.Loader.Events.FILE_LOAD_ERROR, () => {
@@ -370,7 +388,7 @@ class WorldScene extends Phaser.Scene {
     }
 
     this.drawBackdrop(level.worldW, level.worldH, zone?.name ?? zoneId);
-    this.buildTerrain(level);
+    this.buildTerrain(level, zoneId);
     for (const p of level.placements) this.placeGlyph(p);
     this.candidates = level.placements.map((p) =>
       p.toZone !== undefined
@@ -485,21 +503,38 @@ class WorldScene extends Phaser.Scene {
 
   /**
    * Render the level's merged collision rects as STATIC colliders the avatar stands on.
-   * PR-B placeholder skin: ground-line rects use the ground colour, elevated runs the
-   * platform colour. (PR C swaps these colored rects for the generated tileset.)
+   * PREFER the generated PixelLab tileset (tiled fill, with a top-edge tile on the exposed
+   * surface, via the Wang metadata); fall back to flat colored blocks when no tileset
+   * shipped. Either way the rect IS the static collider, so collision matches the art.
    */
-  private buildTerrain(level: RoomLevel): void {
+  private buildTerrain(level: RoomLevel, zoneId: string): void {
+    const key = mapTilesetKey(zoneId);
+    const atlas = this.mapAtlas(zoneId);
+    const textured = atlas !== undefined && this.textures.exists(key);
+    if (textured) this.ensureTileFrames(key, atlas);
+
     for (const r of level.collisionRects) {
       const elevated = r.y + r.h <= level.groundY; // entirely above the walk line → a platform
-      this.addStaticBlock(
-        r.x + r.w / 2,
-        r.y + r.h / 2,
-        r.w,
-        r.h,
-        elevated ? COL_PLATFORM : COL_GROUND,
-        elevated ? COL_PLATFORM_EDGE : COL_GROUND_EDGE,
-        elevated ? DEPTH_PLATFORM : DEPTH_GROUND,
-      );
+      const depth = elevated ? DEPTH_PLATFORM : DEPTH_GROUND;
+      const cx = r.x + r.w / 2;
+      const cy = r.y + r.h / 2;
+      if (textured) {
+        const row = Math.round(r.y / level.tileSize);
+        const c0 = Math.round(r.x / level.tileSize);
+        const len = Math.round(r.w / level.tileSize);
+        const frame = this.isTopExposed(level, row, c0, len) ? TILE_FRAME_TOP : TILE_FRAME_FILL;
+        this.addTexturedBlock(cx, cy, r.w, r.h, key, frame, depth);
+      } else {
+        this.addStaticBlock(
+          cx,
+          cy,
+          r.w,
+          r.h,
+          elevated ? COL_PLATFORM : COL_GROUND,
+          elevated ? COL_PLATFORM_EDGE : COL_GROUND_EDGE,
+          depth,
+        );
+      }
     }
   }
 
@@ -522,6 +557,57 @@ class WorldScene extends Phaser.Scene {
     this.roomObjects.push(rect);
     this.staticBlocks.push(rect);
     return rect;
+  }
+
+  /** A tiled sidescroller-tileset block with a STATIC body (the rect IS the collider). */
+  private addTexturedBlock(cx: number, cy: number, w: number, h: number, key: string, frame: string, depth: number): void {
+    try {
+      const ts = this.add.tileSprite(cx, cy, w, h, key, frame).setDepth(depth);
+      this.physics.add.existing(ts, true);
+      this.roomObjects.push(ts);
+      this.staticBlocks.push(ts);
+    } catch {
+      // Tile render unavailable — fall back to a colored static block so collision survives.
+      this.addStaticBlock(cx, cy, w, h, COL_GROUND, COL_GROUND_EDGE, depth);
+    }
+  }
+
+  /** Build the Wang atlas for a zone's map tileset metadata, or undefined if absent. */
+  private mapAtlas(zoneId: string): WangAtlas | undefined {
+    try {
+      const meta = mapTilesetMeta(zoneId) as WangTilesetMeta | undefined;
+      return meta ? buildWangAtlas(meta) : undefined;
+    } catch {
+      return undefined;
+    }
+  }
+
+  /**
+   * Register the cropped fill + top-edge frames once per texture. NOTE the sidescroller
+   * convention is INVERTED from the top-down tilesets: here "lower" = SOLID material,
+   * "upper" = transparent air. So fill = all-lower; the walk surface = air on top
+   * (NW/NE upper), solid on the bottom (SW/SE lower).
+   */
+  private ensureTileFrames(key: string, atlas: WangAtlas): void {
+    try {
+      const tex = this.textures.get(key);
+      if (!tex) return;
+      const fill = wangRectForCorners(atlas, { NW: "lower", NE: "lower", SW: "lower", SE: "lower" });
+      const top = wangRectForCorners(atlas, { NW: "upper", NE: "upper", SW: "lower", SE: "lower" });
+      if (!tex.has(TILE_FRAME_FILL)) tex.add(TILE_FRAME_FILL, 0, fill.x, fill.y, fill.width, fill.height);
+      if (!tex.has(TILE_FRAME_TOP)) tex.add(TILE_FRAME_TOP, 0, top.x, top.y, top.width, top.height);
+    } catch {
+      /* frame registration unavailable — addTexturedBlock falls back to colored blocks */
+    }
+  }
+
+  /** True iff the row directly above a collision run has any air (so its top tile shows). */
+  private isTopExposed(level: RoomLevel, row: number, c0: number, len: number): boolean {
+    if (row <= 0) return true;
+    const above = level.solid[row - 1];
+    if (!above) return true;
+    for (let c = c0; c < c0 + len; c++) if (above[c] !== true) return true;
+    return false;
   }
 
   // ── glyphs (NPC / item / door) ───────────────────────────────────────────

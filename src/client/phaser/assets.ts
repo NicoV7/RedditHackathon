@@ -437,6 +437,22 @@ const TILESET_JSON: GlobModMap = import.meta.glob
 const OVERWORLD_URLS: GlobUrlMap = import.meta.glob
   ? import.meta.glob("../assets/overworld/*/*.png", { eager: true, import: "default" })
   : {};
+// MAP art (PixelLab): a sidescroller TILESET per zone (the ground/platform skin) +
+// side-view PROP images. The tilemap layout + collision live in zoneMaps.ts/mapToLevel.ts;
+// these only skin the solid cells / decorate the rooms. Absent files → the placeholder
+// colored-block render (PR B) stays. Tilesets: maps/<zone>/tileset.png; props: maps/props/<id>.png.
+const MAP_TILESET_URLS: GlobUrlMap = import.meta.glob
+  ? import.meta.glob("../assets/maps/*/tileset.png", { eager: true, import: "default" })
+  : {};
+const MAP_PROP_URLS: GlobUrlMap = import.meta.glob
+  ? import.meta.glob("../assets/maps/props/*.png", { eager: true, import: "default" })
+  : {};
+// Each map tileset ships a Wang-corner metadata JSON (PixelLab) parsed by wang.ts to
+// pick fill/edge tiles. Imported as the parsed object (not a URL) so the scene autotiles
+// synchronously — same idiom as the legacy top-down TILESET_JSON above.
+const MAP_TILESET_META: GlobModMap = import.meta.glob
+  ? import.meta.glob("../assets/maps/*/tileset.json", { eager: true })
+  : {};
 
 /** The 8 PixelLab facing directions authored per character (canvas 68×68). */
 export type SpriteDir =
@@ -541,6 +557,48 @@ export function overworldSlugPresent(slug: string): boolean {
 /** Every character (player + NPC pool) whose overworld art shipped, in stable order. */
 export function availableOverworldSlugs(): string[] {
   return [PLAYER_SPRITE_SLUG, ...NPC_SPRITE_SLUGS].filter(overworldSlugPresent);
+}
+
+// ── Map art (per-zone sidescroller tileset + side-view props) ──
+/** Phaser texture key for a zone's sidescroller tileset sheet. */
+export function mapTilesetKey(zoneId: string): string {
+  return `maptiles:${zoneId}`;
+}
+/** Resolve the bundled URL for a zone's map tileset, or undefined if its file is absent. */
+export function mapTilesetUrl(zoneId: string): string | undefined {
+  const tail = `/maps/${zoneId}/tileset.png`;
+  for (const [path, url] of Object.entries(MAP_TILESET_URLS)) {
+    if (path.endsWith(tail)) return url;
+  }
+  return undefined;
+}
+/** True iff a zone's map tileset shipped. */
+export function mapTilesetPresent(zoneId: string): boolean {
+  return mapTilesetUrl(zoneId) !== undefined;
+}
+/** Resolve the parsed Wang metadata for a zone's map tileset, or undefined if absent. */
+export function mapTilesetMeta(zoneId: string): unknown {
+  const tail = `/maps/${zoneId}/tileset.json`;
+  for (const [path, mod] of Object.entries(MAP_TILESET_META)) {
+    if (path.endsWith(tail)) {
+      const m = mod as { default?: unknown };
+      return m.default ?? mod;
+    }
+  }
+  return undefined;
+}
+
+/** Phaser texture key for a side-view map prop image. */
+export function mapPropKey(propId: string): string {
+  return `mapprop:${propId}`;
+}
+/** Resolve the bundled URL for a map prop, or undefined if its file is absent. */
+export function mapPropUrl(propId: string): string | undefined {
+  const tail = `/maps/props/${propId}.png`;
+  for (const [path, url] of Object.entries(MAP_PROP_URLS)) {
+    if (path.endsWith(tail)) return url;
+  }
+  return undefined;
 }
 
 /** Resolve the bundled URL for a Wang tileset PNG, or undefined if absent. */
