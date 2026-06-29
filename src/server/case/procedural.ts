@@ -28,6 +28,7 @@ import type {
   Item,
   ItemKind,
   MapDef,
+  NavGrid,
   Npc,
   Precondition,
   QuirkTag,
@@ -218,8 +219,35 @@ function buildDoors(rng: Rng, zones: Zone[], keyItemId?: string): {
   return { doors, gateByZone };
 }
 
+/**
+ * Deterministic ON-GRID edge cell of a room for a door glyph. ROOM-BASED model: each
+ * zone is the FULL local navGrid (a single 25×25 room), and a door is rendered at an
+ * edge of the FROM-room. We spread doors around the four walls by `slot` (the door's
+ * index among those leaving that room) so two doors out of one room never overlap, and
+ * place each at the wall's midpoint. Pure integer math over the grid — no RNG, no
+ * floats; purely a render coordinate (never read by validator/solver/reachability).
+ */
+function doorEdgeCell(grid: NavGrid, slot: number): { x: number; y: number } {
+  const midC = Math.floor(grid.cols / 2);
+  const midR = Math.floor(grid.rows / 2);
+  const maxC = grid.cols - 1;
+  const maxR = grid.rows - 1;
+  switch (((slot % 4) + 4) % 4) {
+    case 0:
+      return { x: midC, y: 0 }; // top wall
+    case 1:
+      return { x: maxC, y: midR }; // right wall
+    case 2:
+      return { x: midC, y: maxR }; // bottom wall
+    default:
+      return { x: 0, y: midR }; // left wall
+  }
+}
+
 function buildMap(rng: Rng, keyItemId?: string): { map: MapDef; zoneIds: string[]; gateByZone: Map<string, Precondition> } {
   const chosen = rng.shuffle(ZONE_DEFS).slice(0, 4);
+  // The door GRAPH is built over the legacy 2×2 grid-block bounds so adjacency (and
+  // therefore the spanning tree + the gated edge) stays byte-identical to before.
   const zones: Zone[] = chosen.map((z, i) => ({
     id: z.id,
     name: z.name,
@@ -228,8 +256,26 @@ function buildMap(rng: Rng, keyItemId?: string): { map: MapDef; zoneIds: string[
     bounds: { x: (i % 2) * 200, y: Math.floor(i / 2) * 200, w: 200, h: 200 },
   }));
   const { doors, gateByZone } = buildDoors(rng, zones, keyItemId);
+
+  const navGrid: NavGrid = { cellSize: 16, origin: { x: 0, y: 0 }, cols: 25, rows: 25 };
+  // ROOM-BASED render model: collapse every zone to the FULL local room so the client
+  // renders ONE active room at a time on the 25×25 grid, and the avatar/NPCs/items all
+  // map onto the now-full grid. zone.bounds/navGrid are client-render only — the
+  // validator/solver/reachability never read them, so solvability is untouched.
+  for (const z of zones) z.bounds = { x: 0, y: 0, w: navGrid.cols, h: navGrid.rows };
+
+  // Re-seat each door at an ON-GRID edge cell of its FROM-room (was the off-grid
+  // `to.bounds.x`/`y` at px 3200). Doors leaving the same room get distinct walls via
+  // their per-room slot so they never overlap.
+  const slotByRoom = new Map<string, number>();
+  for (const door of doors) {
+    const slot = slotByRoom.get(door.from) ?? 0;
+    slotByRoom.set(door.from, slot + 1);
+    door.coords = doorEdgeCell(navGrid, slot);
+  }
+
   return {
-    map: { zones, navGrid: { cellSize: 16, origin: { x: 0, y: 0 }, cols: 25, rows: 25 }, doors },
+    map: { zones, navGrid, doors },
     zoneIds: zones.map((z) => z.id),
     gateByZone,
   };
@@ -279,7 +325,10 @@ export function generateTemplate(dailySeed: string, opts?: { suspects?: number; 
     id: keyItemId,
     kind: "document",
     zone: startZoneId,
-    coords: { x: rng.int(200), y: rng.int(200) },
+    // ON-GRID cell within the room (ROOM-BASED render). coords are render-only — the
+    // single rng.int() step per axis is unchanged, only its range, so every downstream
+    // draw stays byte-identical (validator/solver/procedural seeds untouched).
+    coords: { x: rng.int(map.navGrid.cols), y: rng.int(map.navGrid.rows) },
     examineText: "A heavy iron key on a brass fob — it fits a door somewhere in the house.",
     revealsFactIds: [],
     presentReactions: [],
@@ -292,7 +341,8 @@ export function generateTemplate(dailySeed: string, opts?: { suspects?: number; 
       id: nid("item"),
       kind: rng.pick(ITEM_KINDS),
       zone: z,
-      coords: { x: rng.int(200), y: rng.int(200) },
+      // ON-GRID cell within the room (ROOM-BASED render); see keyItem note above.
+      coords: { x: rng.int(map.navGrid.cols), y: rng.int(map.navGrid.rows) },
       examineText: "A detail that might matter — or might not.",
       revealsFactIds: [],
       presentReactions: [],
