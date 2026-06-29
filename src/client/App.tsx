@@ -5,11 +5,17 @@
  * Responsibilities (the React shell owns game state; Phaser owns pixels):
  *  - drive the FSM reducer; run all side effects (api calls, the start clock)
  *  - mount the living-world scene in Exploring/Dialogue; the board in Board
- *  - translate Phaser intents (approach NPC, examine item, tag, accuse) into
- *    FSM actions + server calls
+ *  - translate Phaser intents (approach NPC, examine item, MOVE the avatar, PRESENT
+ *    an item, tag, accuse) into FSM actions + server calls
+ *  - fetch the persistent detective sheet on load; debounce-persist the mid-case
+ *    session on each verb and resume it on entry (Part 1.4)
+ *  - handle the Part 1.5 accuse gate: a server `gateNotMet` keeps the player IN the
+ *    case (GATE_REJECTED → Board "need more evidence"); only a graded verdict RESOLVES.
  *
- * The client has NO knowledge of the killer: it sends nominations/accusations
- * and renders only server-revealed clues + the final reveal.
+ * The client has NO knowledge of the killer: it sends nominations/accusations and
+ * renders only server-revealed clues + the final reveal. Every Phaser FX it triggers
+ * (the portrait lie-tell filter, the gotcha shake) is a cosmetic projection of a
+ * server-authoritative signal — never read back into game logic.
  */
 import { useCallback, useEffect, useReducer, useRef, useState } from "react";
 import type { PhaserBridge, WorldHandle, BoardHandle, BoardCard } from "./bridge.js";
@@ -19,6 +25,8 @@ import {
   reducer,
   initialState,
   deductionStrength,
+  latestTell,
+  boardNodes,
   type GameState,
   type GameData,
 } from "./state/fsm.js";
@@ -26,6 +34,7 @@ import { Briefing } from "./ui/Briefing.js";
 import { Interrogation, type InterrogationLine } from "./ui/Interrogation.js";
 import { BoardPanel } from "./ui/BoardPanel.js";
 import { Resolution } from "./ui/Resolution.js";
+import { Inventory } from "./ui/Inventory.js";
 import { noir, font } from "./ui/theme.js";
 import { useScreenTransition, TransitionVeil } from "./ui/transitions.js";
 
@@ -42,12 +51,19 @@ interface DialogueMemory {
   freshClueIds: string[];
 }
 
+/** Debounce window for the mid-case save (Part 1.4): coalesce rapid verbs. */
+const SAVE_DEBOUNCE_MS = 1200;
+
 export function App({ bridge, dailySeed: seedProp }: AppProps): React.JSX.Element {
   const [state, dispatch] = useReducer(reducer, initialState);
   // `displayed` lags `state` across phase changes so the screen (and its Phaser
   // canvas) swaps UNDER the transition veil; within a phase it mirrors live state.
   const { displayed, veil } = useScreenTransition(state);
   const [thinking, setThinking] = useState(false);
+  const [invOpen, setInvOpen] = useState(false);
+  // increments on every caught-in-a-lie present-result → the Interrogation panel
+  // plays a cosmetic "gotcha" shake (Pillar 4 camera-shake analog in the React layer).
+  const [gotcha, setGotcha] = useState(0);
   const dialogueRef = useRef<Record<string, DialogueMemory>>({});
 
   const dailySeed = seedProp ?? new Date().toISOString().slice(0, 10);
@@ -57,9 +73,17 @@ export function App({ bridge, dailySeed: seedProp }: AppProps): React.JSX.Elemen
   const worldHandle = useRef<WorldHandle | null>(null);
   const boardHandle = useRef<BoardHandle | null>(null);
 
-  // ── load the case once ──
+  // keep a ref to state for async closures that must not capture stale state
+  const stateRef = useRef<GameState>(state);
+  useEffect(() => {
+    stateRef.current = state;
+  }, [state]);
+
+  // ── load the case once, then resume any saved session + the detective sheet ──
   useEffect(() => {
     let alive = true;
+    // resume runs in parallel: it tells us whether to load fresh / a prior session.
+    void api.resume({ dailySeed, dayId: dailySeed }).catch(() => null);
     api
       .startCase({ dailySeed })
       .then((res) => {
@@ -68,10 +92,48 @@ export function App({ bridge, dailySeed: seedProp }: AppProps): React.JSX.Elemen
       .catch((e: unknown) => {
         if (alive) dispatch({ type: "LOAD_FAILED", error: String(e) });
       });
+    // detective sheet (faculties/streaks/unlocks) — best-effort, non-blocking.
+    api
+      .detective({})
+      .then((res) => {
+        if (alive && res?.detective) dispatch({ type: "SET_DETECTIVE", detective: res.detective });
+      })
+      .catch(() => {});
     return () => {
       alive = false;
     };
   }, [dailySeed]);
+
+  // ── debounced mid-case save (Part 1.4): persist on each completed verb. The
+  //    server is authoritative; this is best-effort and never blocks the UI. ──
+  const saveTimer = useRef<number | null>(null);
+  const scheduleSave = useCallback(() => {
+    if (saveTimer.current != null) window.clearTimeout(saveTimer.current);
+    saveTimer.current = window.setTimeout(() => {
+      const s = stateRef.current;
+      if (s.phase === "Loading" || s.phase === "Briefing" || s.phase === "Resolved") return;
+      void api
+        .saveState({
+          dailySeed,
+          dayId: dailySeed,
+          posZone: s.playerZone ?? "",
+          // server-authored note pins are the durable board graph projection.
+          boardGraph: boardNodes(s),
+          inventory: s.inventory,
+          transcriptRef: "", // transcripts are UI-local; server keeps its own log
+          questionsUsed: s.questions,
+          elapsedMs: Date.now() - s.startedAtMs,
+        })
+        .catch(() => {});
+    }, SAVE_DEBOUNCE_MS);
+  }, [dailySeed]);
+
+  // flush any pending save on unmount
+  useEffect(() => {
+    return () => {
+      if (saveTimer.current != null) window.clearTimeout(saveTimer.current);
+    };
+  }, []);
 
   // ── mount/unmount the living-world scene — kept ALIVE across every in-case
   //    phase (Exploring/Dialogue/Board/Accusing). The host div lives in a
@@ -90,6 +152,12 @@ export function App({ bridge, dailySeed: seedProp }: AppProps): React.JSX.Elemen
       worldHandle.current = bridge.mountWorld(worldHostRef.current, displayed.view, {
         onApproachNpc: (npcId) => dispatch({ type: "ENTER_DIALOGUE", npcId }),
         onExamineItem: (itemId) => void examine(itemId),
+        // the walkable avatar arrived in a zone → record the logical position
+        // (server-authoritative perception model, Part 2.3).
+        onMovePlayer: (zoneId) => void movePlayer(zoneId),
+        // present a held item to an NPC from the world (the in-dialogue Present
+        // affordance is the primary path; this supports a world-side present too).
+        onPresentItem: (itemId, npcId) => void present(itemId, npcId),
       });
     }
     if (!inWorld && worldHandle.current) {
@@ -127,6 +195,10 @@ export function App({ bridge, dailySeed: seedProp }: AppProps): React.JSX.Elemen
       for (const n of data.view.npcs) {
         boardHandle.current.setStrength(n.id, deductionStrength(data, n.id));
       }
+      // pin the notetaker notes the server authored (addNote? is optional on the bridge)
+      for (const note of boardNodes(data)) {
+        boardHandle.current.addNote?.(note.clueId, note.noteText, note.sourceNpcId);
+      }
     }
     if (displayed.phase !== "Board" && boardHandle.current) {
       boardHandle.current.destroy();
@@ -135,13 +207,29 @@ export function App({ bridge, dailySeed: seedProp }: AppProps): React.JSX.Elemen
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [displayed.phase]);
 
-  // ── push live deduction-strength meters to the board when tags/clues change ──
+  // ── push live deduction-strength meters + new notes to the board on change ──
+  const pinnedNotes = useRef<Set<string>>(new Set());
   useEffect(() => {
     if (displayed.phase !== "Board" || !boardHandle.current) return;
     for (const n of displayed.view.npcs) {
       boardHandle.current.setStrength(n.id, deductionStrength(displayed, n.id));
     }
+    // pin any newly-arrived notetaker note (idempotent via the pinned set)
+    for (const note of boardNodes(displayed)) {
+      if (pinnedNotes.current.has(note.clueId)) continue;
+      pinnedNotes.current.add(note.clueId);
+      boardHandle.current.addNote?.(note.clueId, note.noteText, note.sourceNpcId);
+    }
+    // gate the Phaser board's own Accuse affordance to match the React gate
+    boardHandle.current.setAccuseEnabled?.(
+      displayed.phase === "Board" && nominatedKillerReady(displayed),
+    );
   }, [displayed]);
+
+  // reset the pinned-notes ledger whenever the board is torn down (new mount)
+  useEffect(() => {
+    if (displayed.phase !== "Board") pinnedNotes.current = new Set();
+  }, [displayed.phase]);
 
   // ── tear everything down on unmount ──
   useEffect(() => {
@@ -154,17 +242,35 @@ export function App({ bridge, dailySeed: seedProp }: AppProps): React.JSX.Elemen
   }, []);
 
   // ── side-effecting intents ──
-  const tag = useCallback((npcId: string, role: NominationRole) => {
-    dispatch({ type: "TAG_NPC", npcId, role });
-    // best-effort persist; UI does not block on it
-    void api.nominate({ caseId: caseIdOf(stateRef.current), npcId, role }).catch(() => {});
-  }, []);
+  const tag = useCallback(
+    (npcId: string, role: NominationRole) => {
+      dispatch({ type: "TAG_NPC", npcId, role });
+      // best-effort persist; UI does not block on it
+      void api.nominate({ caseId: caseIdOf(stateRef.current), npcId, role }).catch(() => {});
+      scheduleSave();
+    },
+    [scheduleSave],
+  );
 
-  // keep a ref to state for async closures that must not capture stale state
-  const stateRef = useRef<GameState>(state);
-  useEffect(() => {
-    stateRef.current = state;
-  }, [state]);
+  // record the avatar's logical zone (drives the perception model server-side).
+  const movePlayer = useCallback(
+    async (zoneId: string) => {
+      const s = stateRef.current;
+      if (s.phase === "Loading") return;
+      // optimistic local update so perception-dependent UI reacts immediately
+      dispatch({ type: "MOVE_PLAYER", zoneId });
+      try {
+        // a logical tick proxy: the world owns the integer clock, but move is a
+        // discrete event; we send a monotonic tick derived from question count so
+        // logic stays integer-pure (never a float / Date.now in logical state).
+        await api.move({ caseId: s.view.caseId, dailySeed, zoneId, tick: s.questions });
+      } catch {
+        /* swallow — movement is non-blocking, the server reconciles */
+      }
+      scheduleSave();
+    },
+    [dailySeed, scheduleSave],
+  );
 
   const ask = useCallback(
     async (npcId: string, message: string) => {
@@ -189,9 +295,10 @@ export function App({ bridge, dailySeed: seedProp }: AppProps): React.JSX.Elemen
         void e;
       } finally {
         setThinking(false);
+        scheduleSave();
       }
     },
-    [dailySeed],
+    [dailySeed, scheduleSave],
   );
 
   const examine = useCallback(
@@ -205,9 +312,43 @@ export function App({ bridge, dailySeed: seedProp }: AppProps): React.JSX.Elemen
         }
       } catch {
         /* swallow — examine is non-blocking */
+      } finally {
+        scheduleSave();
       }
     },
-    [dailySeed],
+    [dailySeed, scheduleSave],
+  );
+
+  // present a held item to an NPC (the "gotcha") → fires presentReactions server-side.
+  const present = useCallback(
+    async (itemId: string, npcId: string) => {
+      const s = stateRef.current;
+      if (s.phase === "Loading") return;
+      setThinking(true);
+      try {
+        const res = await api.present({ caseId: s.view.caseId, dailySeed, itemId, npcId });
+        // surface the reaction prose as an NPC line in the transcript
+        const m = ensureMem(dialogueRef.current, npcId);
+        m.transcript.push({ speaker: "you", text: `*presents the evidence*` });
+        m.transcript.push({ speaker: "npc", text: res.reactionText });
+        m.freshClueIds = res.revealed.map((c) => c.id);
+        dispatch({
+          type: "PRESENT_RESULT",
+          clues: res.revealed,
+          npcId,
+          caughtInLie: res.caughtInLie,
+        });
+        // a caught lie → the cosmetic "gotcha" (Pillar 4 camera-shake analog). The
+        // portrait's own lie-tell filter also fires if the reveal carried a tell.
+        if (res.caughtInLie) setGotcha((g) => g + 1);
+      } catch {
+        /* swallow — present is non-blocking */
+      } finally {
+        setThinking(false);
+        scheduleSave();
+      }
+    },
+    [dailySeed, scheduleSave],
   );
 
   const accuse = useCallback(
@@ -226,7 +367,14 @@ export function App({ bridge, dailySeed: seedProp }: AppProps): React.JSX.Elemen
           questions: s.questions,
           timeMs: Date.now() - s.startedAtMs,
         });
-        dispatch({ type: "RESOLVED", result: res });
+        // Part 1.5: a non-null `gateNotMet` is a SPOILER-SAFE rejection (the server
+        // made no state change). Keep the player in the case — back to the Board
+        // with a "need more evidence" nudge. Only a graded verdict RESOLVES.
+        if (res.gateNotMet) {
+          dispatch({ type: "GATE_REJECTED" });
+        } else {
+          dispatch({ type: "RESOLVED", result: res });
+        }
       } catch {
         dispatch({ type: "CANCEL_ACCUSE" });
       }
@@ -252,7 +400,9 @@ export function App({ bridge, dailySeed: seedProp }: AppProps): React.JSX.Elemen
       <Briefing view={displayed.view} onStart={() => dispatch({ type: "START_INTERROGATING" })} />
     );
   } else if (displayed.phase === "Resolved") {
-    content = <Resolution result={displayed.result} dailySeed={dailySeed} />;
+    content = (
+      <Resolution result={displayed.result} dailySeed={dailySeed} detective={displayed.detective} />
+    );
   } else if (displayed.phase === "Dialogue") {
     const npc = displayed.view.npcs.find((n) => n.id === displayed.npcId);
     const mem = ensureMem(dialogueRef.current, displayed.npcId);
@@ -265,7 +415,13 @@ export function App({ bridge, dailySeed: seedProp }: AppProps): React.JSX.Elemen
         freshClueIds={mem.freshClueIds}
         askedChips={mem.askedChips}
         thinking={thinking}
+        tell={latestTell(displayed, npcId)}
+        inventory={displayed.inventory}
+        items={displayed.view.items}
+        bridge={bridge}
+        gotcha={gotcha}
         onAsk={(m) => void ask(npcId, m)}
+        onPresent={(itemId) => void present(itemId, npcId)}
         onBack={() => dispatch({ type: "EXIT_DIALOGUE" })}
       />
     ) : (
@@ -304,6 +460,12 @@ export function App({ bridge, dailySeed: seedProp }: AppProps): React.JSX.Elemen
           <div ref={worldHostRef} style={worldHost} />
           <nav style={exploreNav}>
             <span style={exploreHint}>Tap a guest to interrogate. Examine what's left behind.</span>
+            <Inventory
+              inventory={displayed.inventory}
+              items={displayed.view.items}
+              open={invOpen}
+              onToggle={() => setInvOpen((o) => !o)}
+            />
             <button
               type="button"
               disabled={!displayed.boardUnlocked}
@@ -344,6 +506,14 @@ function ensureMem(store: Record<string, DialogueMemory>, npcId: string): Dialog
 
 function caseIdOf(s: GameState): string {
   return s.phase === "Loading" ? "" : s.view.caseId;
+}
+
+/** Advisory: is a killer tagged with enough deduction strength to enable Accuse? */
+function nominatedKillerReady(s: GameData): boolean {
+  for (const [npcId, role] of Object.entries(s.nominations)) {
+    if (role === "killer" && deductionStrength(s, npcId) >= 0.6) return true;
+  }
+  return false;
 }
 
 const shell: React.CSSProperties = {

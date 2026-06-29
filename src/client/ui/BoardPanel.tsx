@@ -1,17 +1,28 @@
 /**
  * src/client/ui/BoardPanel.tsx — React side panel around the Phaser Deduction
  * Board. Per-NPC role tagging (suspect/bystander/killer/unknown), a deduction-
- * strength readout, and the Accuse button (enabled ONLY when an NPC is tagged
- * 'killer'). The Phaser board itself is mounted by App.tsx via the bridge; this
- * panel is the React chrome around it.
+ * strength readout, the auto-pinned notetaker notes, and the Accuse button.
  *
- * Tagging here emits a nomination both to the FSM (onTag) and, through App, to
- * the Phaser board handle. The client never knows the killer — it only sends the
- * hypothesis.
+ * THE ACCUSE GATE (Part 1.5): the button is gated by the pure `canAccuse` selector
+ * (a killer is tagged AND its deduction-strength clears the threshold). This is an
+ * ADVISORY UI gate — the SERVER independently re-checks solution-edge coverage and
+ * may still return `gateNotMet`; when it does, `data.needMoreEvidence` is set and we
+ * surface a "need more evidence" nudge WITHOUT leaving the case.
+ *
+ * The notetaker auto-adds every clue that carries server-authored `noteText` as a
+ * board note (Part 2.3) — the panel never invents note text; it projects `boardNodes`.
+ *
+ * Tagging emits a nomination to the FSM (onTag) and, through App, to the Phaser board
+ * handle. The client never knows the killer — it only sends the hypothesis.
  */
 import type { ClientNpcView, NominationRole } from "../../shared/api.js";
 import type { GameData } from "../state/fsm.js";
-import { deductionStrength, nominatedKiller } from "../state/fsm.js";
+import {
+  deductionStrength,
+  nominatedKiller,
+  canAccuse,
+  boardNodes,
+} from "../state/fsm.js";
 import { noir, font } from "./theme.js";
 
 const ROLES: NominationRole[] = ["unknown", "bystander", "suspect", "killer"];
@@ -29,6 +40,10 @@ export function BoardPanel(props: BoardPanelProps): React.JSX.Element {
   const { data } = props;
   const suspects = data.view.npcs.filter((n) => data.view.suspectIds.includes(n.id));
   const accusedId = nominatedKiller(data);
+  const ready = canAccuse(data); // advisory gate (Part 1.5)
+  const notes = boardNodes(data); // server-authored notetaker pins
+  const npcName = (id: string): string =>
+    data.view.npcs.find((n) => n.id === id)?.name ?? id;
 
   return (
     <div style={styles.screen}>
@@ -44,6 +59,26 @@ export function BoardPanel(props: BoardPanelProps): React.JSX.Element {
       <div ref={props.boardHostRef} style={styles.boardHost} />
 
       <div style={styles.panel}>
+        {/* Notetaker pins — auto-added from clues carrying server-authored noteText. */}
+        {notes.length > 0 && (
+          <section style={styles.notesSection} aria-label="Notes pinned to the board">
+            <div style={styles.panelTitle}>Your notes</div>
+            <ul style={styles.notesList}>
+              {notes.map((n) => (
+                <li key={n.clueId} style={styles.noteCard}>
+                  <span style={styles.notePin} aria-hidden>
+                    ◆
+                  </span>
+                  <span style={styles.noteText}>{n.noteText}</span>
+                  {n.sourceNpcId && (
+                    <span style={styles.noteSource}>— {npcName(n.sourceNpcId)}</span>
+                  )}
+                </li>
+              ))}
+            </ul>
+          </section>
+        )}
+
         <div style={styles.panelTitle}>Tag the room</div>
         <ul style={styles.suspectList}>
           {suspects.map((n) => (
@@ -57,15 +92,25 @@ export function BoardPanel(props: BoardPanelProps): React.JSX.Element {
           ))}
         </ul>
 
+        {/* the "need more evidence" nudge after a server-rejected premature accuse */}
+        {data.needMoreEvidence && (
+          <div style={styles.nudge} role="status">
+            The threads don't hold yet. Find another clue that ties them to the body
+            before you accuse.
+          </div>
+        )}
+
         <button
           type="button"
-          style={{ ...styles.accuse, ...(accusedId ? null : styles.accuseDisabled) }}
-          disabled={!accusedId}
-          onClick={() => accusedId && props.onAccuse(accusedId)}
+          style={{ ...styles.accuse, ...(accusedId && ready ? null : styles.accuseDisabled) }}
+          disabled={!accusedId || !ready}
+          onClick={() => accusedId && ready && props.onAccuse(accusedId)}
         >
-          {accusedId
-            ? `Accuse ${nameOf(suspects, accusedId)}`
-            : "Tag a killer to accuse"}
+          {!accusedId
+            ? "Tag a killer to accuse"
+            : !ready
+              ? `Build your case against ${npcName(accusedId)}`
+              : `Accuse ${npcName(accusedId)}`}
         </button>
       </div>
     </div>
@@ -113,10 +158,6 @@ function SuspectRow(props: {
   );
 }
 
-function nameOf(npcs: ClientNpcView[], id: string): string {
-  return npcs.find((n) => n.id === id)?.name ?? id;
-}
-
 const styles: Record<string, React.CSSProperties> = {
   screen: {
     height: "100%",
@@ -153,6 +194,22 @@ const styles: Record<string, React.CSSProperties> = {
     overflow: "hidden",
   },
   panel: { flex: 1, overflowY: "auto", padding: "0 16px 16px" },
+  notesSection: { marginBottom: 18 },
+  notesList: { listStyle: "none", margin: 0, padding: 0, display: "grid", gap: 8 },
+  noteCard: {
+    display: "flex",
+    alignItems: "baseline",
+    gap: 8,
+    background: `${noir.crimson}14`,
+    border: `1px solid ${noir.crimson}55`,
+    borderRadius: 8,
+    padding: "8px 11px",
+    fontSize: 13.5,
+    lineHeight: 1.4,
+  },
+  notePin: { color: noir.crimson, fontSize: 10, flex: "0 0 auto" },
+  noteText: { flex: 1, color: "#f0d6d3" },
+  noteSource: { color: noir.paperDim, fontStyle: "italic", fontSize: 12, flex: "0 0 auto" },
   panelTitle: { fontSize: 13, letterSpacing: 1, color: noir.amber, margin: "8px 0 10px" },
   suspectList: { listStyle: "none", margin: 0, padding: 0, display: "grid", gap: 12 },
   suspectRow: {
@@ -186,6 +243,16 @@ const styles: Record<string, React.CSSProperties> = {
   },
   roleChipActive: { background: noir.amber, fontWeight: 700 },
   roleChipKiller: { background: noir.crimson, color: noir.paper },
+  nudge: {
+    marginTop: 14,
+    padding: "10px 12px",
+    fontSize: 13,
+    lineHeight: 1.45,
+    color: "#f0d6d3",
+    background: `${noir.crimson}14`,
+    border: `1px solid ${noir.crimson}66`,
+    borderRadius: 8,
+  },
   accuse: {
     marginTop: 16,
     width: "100%",

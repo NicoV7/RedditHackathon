@@ -1,5 +1,12 @@
 import { describe, it, expect } from "vitest";
 import { createHandlers, defaultDeps } from "./index.js";
+import { generateTemplate, drawInstance } from "./case/procedural.js";
+
+/** Re-derive the server-side instance a handler will use, so a test can drive the
+ *  confidence gate with the REAL solution-edge clue ids (never exposed to the client). */
+function serverInstance(dailySeed: string, playerId: string) {
+  return drawInstance(generateTemplate(dailySeed), playerId);
+}
 
 describe("server endpoint handlers (C7 surface) — verified with fakes", () => {
   it("start → interrogate → examine → accuse, never leaking the killer", async () => {
@@ -28,14 +35,16 @@ describe("server endpoint handlers (C7 surface) — verified with fakes", () => 
       expect(typeof ex.examineText).toBe("string");
     }
 
-    // Accuse a suspect; the server checks correctness (client can't know killer).
-    const guess = view.suspectIds[0]!;
+    // Accuse the real killer WITH the solution-edge clues discovered (passes the gate).
+    const inst = serverInstance(dailySeed, player);
+    const guess = inst.killerId;
     const res = await h.accuse(
-      { caseId: view.caseId, dailySeed, nominatedKillerId: guess, nominations: { [guess]: "killer" }, discoveredClueIds: [], inventory: [], questions: 3, timeMs: 50_000 },
+      { caseId: view.caseId, dailySeed, nominatedKillerId: guess, nominations: { [guess]: "killer" }, discoveredClueIds: inst.solution.supportingClueIds, inventory: [], questions: 3, timeMs: 50_000 },
       player,
       "2026-06-24",
     );
-    expect(typeof res.solved).toBe("boolean");
+    expect(res.gateNotMet).toBeUndefined();
+    expect(res.solved).toBe(true);
     expect(res.summary.crowd.total).toBe(1);
     expect(res.summary.killerName).toBeTruthy();
   });

@@ -19,11 +19,16 @@
       "daily-case": { "cron": "0 12 * * *", "endpoint": "/internal/scheduler/daily-case" }
     }
   },
+  "triggers": {
+    "onAccountDelete": { "endpoint": "/internal/triggers/delete" },
+    "onPostDelete": { "endpoint": "/internal/triggers/delete" },
+    "onCommentDelete": { "endpoint": "/internal/triggers/delete" }
+  },
   "settings": {
     "global": {
       "PARLOR_LLM_PROVIDER": { "type": "string", "label": "LLM provider (gemini|openai)", "isSecret": false },
       "PARLOR_LLM_KEY": { "type": "string", "label": "LLM API key", "isSecret": true }
     }
   },
-  "_comment": "Realtime permission intentionally omitted (co-op is stretch). Wired structure; verify against the Devvit MCP + CLI in a Devvit-enabled environment."
+  "_comment": "Realtime permission intentionally omitted (co-op is stretch). The `triggers` block routes Reddit Account/Post/Comment delete events to the server's /internal/triggers/delete endpoint, which resolves the deleting user to a playerId and calls handleDeleteTrigger → purgePlayer (compliance: honor deletions). Wired structure; verify trigger event/endpoint names against the Devvit MCP + CLI in a Devvit-enabled environment."
 }

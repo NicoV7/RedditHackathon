@@ -13,7 +13,9 @@ export interface ZMember {
 
 export interface RedisLike {
   get(key: string): Promise<string | null>;
-  set(key: string, value: string): Promise<void>;
+  /** Set a value, optionally with an atomic TTL (seconds) so a key can never exist
+   *  without an expiry — the Devvit adapter maps `{ expiration }` to its set option. */
+  set(key: string, value: string, opts?: { expiration?: number }): Promise<void>;
   incrBy(key: string, by: number): Promise<number>;
   hGet(key: string, field: string): Promise<string | null>;
   hSet(key: string, field: string, value: string): Promise<void>;
@@ -21,6 +23,13 @@ export interface RedisLike {
   hGetAll(key: string): Promise<Record<string, string>>;
   zAdd(key: string, member: string, score: number): Promise<void>;
   zIncrBy(key: string, member: string, by: number): Promise<number>;
+  /**
+   * Remove a single member from a sorted set (no-op if absent/missing). Needed by
+   * the deletion purge to drop a player's leaderboard membership from the SHARED
+   * `lb:{caseId}` set without touching other players' scores. The real Devvit
+   * Redis adapter MUST map this to its `zRem`.
+   */
+  zRem(key: string, member: string): Promise<void>;
   zScore(key: string, member: string): Promise<number | null>;
   zRevRange(key: string, start: number, stop: number): Promise<ZMember[]>;
   zRevRank(key: string, member: string): Promise<number | null>;
@@ -44,8 +53,9 @@ export class FakeRedis implements RedisLike {
   async get(key: string) {
     return this.str.get(key) ?? null;
   }
-  async set(key: string, value: string) {
+  async set(key: string, value: string, opts?: { expiration?: number }) {
     this.str.set(key, value);
+    if (opts?.expiration != null) this.ttls.set(key, opts.expiration); // atomic TTL
   }
   async incrBy(key: string, by: number) {
     const v = (Number(this.str.get(key) ?? "0") || 0) + by;
@@ -81,6 +91,15 @@ export class FakeRedis implements RedisLike {
     z.set(member, v);
     this.zset.set(key, z);
     return v;
+  }
+  async zRem(key: string, member: string) {
+    const z = this.zset.get(key);
+    if (!z) return;
+    z.delete(member);
+    if (z.size === 0) {
+      this.zset.delete(key);
+      this.touch(key); // drop a now-empty set's TTL bookkeeping
+    }
   }
   async zScore(key: string, member: string) {
     return this.zset.get(key)?.get(member) ?? null;
