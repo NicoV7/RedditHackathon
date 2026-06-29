@@ -419,39 +419,39 @@ declare global {
 // build-emitted, content-hashed URL — so `{ eager, import:"default" }` (NOT a `?url`
 // query, which Rollup may tree-shake when the map is only read dynamically) gives a
 // `{ relativePath: url }` map that reliably emits every matched asset.
-const SPRITE_URLS: GlobUrlMap = import.meta.glob
-  ? import.meta.glob("../assets/sprites/*/*.png", { eager: true, import: "default" })
+const SPRITE_URLS: GlobUrlMap = typeof document !== "undefined"
+  ? import.meta.glob!("../assets/sprites/*/*.png", { eager: true, import: "default" })
   : {};
-const TILESET_PNG_URLS: GlobUrlMap = import.meta.glob
-  ? import.meta.glob("../assets/tilesets/*.png", { eager: true, import: "default" })
+const TILESET_PNG_URLS: GlobUrlMap = typeof document !== "undefined"
+  ? import.meta.glob!("../assets/tilesets/*.png", { eager: true, import: "default" })
   : {};
 // JSON Wang-metadata: import the parsed object directly (not a URL) so world.ts can
 // build the corner atlas synchronously without a fetch.
-const TILESET_JSON: GlobModMap = import.meta.glob
-  ? import.meta.glob("../assets/tilesets/*.json", { eager: true })
+const TILESET_JSON: GlobModMap = typeof document !== "undefined"
+  ? import.meta.glob!("../assets/tilesets/*.json", { eager: true })
   : {};
 // OVERWORLD side-scroll sprite set — a SECOND set per character, SEPARATE from the
 // 8-direction DIALOGUE sprites above (a sibling dir, so the 2-segment `sprites/*/*`
 // glob never mis-ingests these 3-segment paths). One right-facing frame per movement
 // state; the scene flips X for left. Absent files leave the dialogue/portrait fallback.
-const OVERWORLD_URLS: GlobUrlMap = import.meta.glob
-  ? import.meta.glob("../assets/overworld/*/*.png", { eager: true, import: "default" })
+const OVERWORLD_URLS: GlobUrlMap = typeof document !== "undefined"
+  ? import.meta.glob!("../assets/overworld/*/*.png", { eager: true, import: "default" })
   : {};
 // MAP art (PixelLab): a sidescroller TILESET per zone (the ground/platform skin) +
 // side-view PROP images. The tilemap layout + collision live in zoneMaps.ts/mapToLevel.ts;
 // these only skin the solid cells / decorate the rooms. Absent files → the placeholder
 // colored-block render (PR B) stays. Tilesets: maps/<zone>/tileset.png; props: maps/props/<id>.png.
-const MAP_TILESET_URLS: GlobUrlMap = import.meta.glob
-  ? import.meta.glob("../assets/maps/*/tileset.png", { eager: true, import: "default" })
+const MAP_TILESET_URLS: GlobUrlMap = typeof document !== "undefined"
+  ? import.meta.glob!("../assets/maps/*/tileset.png", { eager: true, import: "default" })
   : {};
-const MAP_PROP_URLS: GlobUrlMap = import.meta.glob
-  ? import.meta.glob("../assets/maps/props/*.png", { eager: true, import: "default" })
+const MAP_PROP_URLS: GlobUrlMap = typeof document !== "undefined"
+  ? import.meta.glob!("../assets/maps/props/*.png", { eager: true, import: "default" })
   : {};
 // Each map tileset ships a Wang-corner metadata JSON (PixelLab) parsed by wang.ts to
 // pick fill/edge tiles. Imported as the parsed object (not a URL) so the scene autotiles
 // synchronously — same idiom as the legacy top-down TILESET_JSON above.
-const MAP_TILESET_META: GlobModMap = import.meta.glob
-  ? import.meta.glob("../assets/maps/*/tileset.json", { eager: true })
+const MAP_TILESET_META: GlobModMap = typeof document !== "undefined"
+  ? import.meta.glob!("../assets/maps/*/tileset.json", { eager: true })
   : {};
 
 /** The 8 PixelLab facing directions authored per character (canvas 68×68). */
