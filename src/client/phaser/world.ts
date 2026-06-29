@@ -49,6 +49,7 @@ import {
 } from "./assets.js";
 import { createFx, type FxQuality, type ParlorFx } from "./fx.js";
 import { findPath, type Cell } from "./pathfind.js";
+import { npcsInRoom, itemsInRoom, doorsFromRoom, doorEntryCell } from "./room.js";
 import {
   buildWangAtlas,
   cornersAt,
@@ -173,15 +174,6 @@ function zoneCellRange(grid: NavGrid, zone: Zone): { c0: number; r0: number; c1:
   return { c0, r0, c1: Math.max(c0, c1), r1: Math.max(r0, r1) };
 }
 
-/** Which zone (if any) contains an integer cell. Logical → drives perception. */
-function zoneOfCell(map: MapDef, cell: Cell): Zone | null {
-  for (const zone of map.zones) {
-    const r = zoneCellRange(map.navGrid, zone);
-    if (cell.col >= r.c0 && cell.col <= r.c1 && cell.row >= r.r0 && cell.row <= r.r1) return zone;
-  }
-  return null;
-}
-
 function logicalCell(
   grid: NavGrid,
   zone: Zone,
@@ -216,11 +208,15 @@ class WorldScene extends Phaser.Scene {
 
   private zoneRects = new Map<string, ZoneRect>();
   private zoneGraphics?: Phaser.GameObjects.Graphics;
-  /** floors (tileset OR programmatic noir) are built once into depth-0 objects. */
-  private floorsBuilt = false;
+  /** ROOM-BASED: zone ids whose floor art is already baked (built once per room). */
+  private floorBuiltZones = new Set<string>();
   /** stable npcId → assigned PixelLab slug (cosmetic; computed once in preload). */
   private npcSlugs = new Map<string, string>();
   private npcSprites: NpcSprite[] = [];
+  /** ROOM-BASED: the active room's item glyphs (cleared on a door transition). */
+  private itemSprites: Phaser.GameObjects.GameObject[] = [];
+  /** ROOM-BASED: the active room's door glyphs (cleared on a door transition). */
+  private doorSprites: Phaser.GameObjects.GameObject[] = [];
   private activeZone: string | null = null;
   private tick = 0;
   private tickTimer?: Phaser.Time.TimerEvent;
@@ -360,23 +356,16 @@ class WorldScene extends Phaser.Scene {
     const map: MapDef = this.view.map;
     this.cameras.main.setBackgroundColor(COL_BG);
 
+    // ROOM-BASED model: every zone is the FULL local room, so the scene renders ONE
+    // active room at a time. The active room defaults to the door-graph root (zones[0],
+    // always reachable); doors transition between rooms (enterDoor), walking never does.
+    this.activeZone = map.zones[0]?.id ?? null;
+
     this.computeZoneRects(map);
     this.zoneGraphics = this.add.graphics();
-    this.drawZones();
 
-    for (const zr of this.zoneRects.values()) {
-      this.add
-        .text(zr.px + 6, zr.py + 4, zr.zone.name, {
-          fontFamily: "monospace",
-          fontSize: "11px",
-          color: "#6f8c92",
-        })
-        .setDepth(2);
-    }
-
-    this.placeItems(map);
-    this.placeDoors(map);
-    this.placeNpcs(map);
+    // Render the active room's floor + content + the avatar, then wire input.
+    this.renderActiveRoom(map);
     this.spawnAvatar(map);
 
     // Pillar 2: cold ambient lighting for the whole scene (cosmetic noir mood).
@@ -398,12 +387,13 @@ class WorldScene extends Phaser.Scene {
       /* no-op */
     }
 
+    // Ambient NPC motion clock (the active room's NPCs are already seated by
+    // renderActiveRoom → syncNpcsToTick; this just keeps them drifting per tick).
     this.tickTimer = this.time.addEvent({
       delay: MS_PER_TICK,
       loop: true,
       callback: () => this.advanceTick(),
     });
-    this.syncNpcsToTick(true);
 
     this.setupKeyboard();
 
@@ -450,72 +440,108 @@ class WorldScene extends Phaser.Scene {
   }
 
   /**
-   * Draw the zone floors. For each zone, render a real tileset floor (tiled
-   * TileSprite) when its tileset texture is loaded; ELSE bake a richer
-   * Cold-Lovecraftian-Noir programmatic floor (board planks + cold speckle + a per-
-   * room vignette) so the world reads as a 1920s speakeasy rather than gray boxes.
-   * The shared `zoneGraphics` still paints the active-zone wash + room strokes on top.
-   * All cosmetic — never read by logic (Part 4.2).
+   * Draw the ACTIVE room's floor (tileset OR programmatic noir) + its wash/stroke.
+   * ROOM-BASED: only the active zone is rendered, on the full local navGrid. The
+   * shared `zoneGraphics` paints the active-room wash + stroke on top of the baked
+   * floor. All cosmetic — never read by logic (Part 4.2).
    */
   private drawZones(): void {
-    this.drawZoneFloors();
+    if (this.activeZone) this.drawZoneFloor(this.activeZone);
     const g = this.zoneGraphics;
     if (!g) return;
     g.clear();
-    for (const zr of this.zoneRects.values()) {
-      const active = zr.zone.id === this.activeZone;
-      // active wash sits over the floor art as a subtle warm-amber tint, not an opaque
-      // fill, so the richer floor stays visible underneath.
-      if (active) {
-        g.fillStyle(COL_ROOM_ACTIVE, 0.22);
-        g.fillRect(zr.px, zr.py, zr.pw, zr.ph);
-      }
-      g.lineStyle(active ? 2 : 1, COL_ROOM_STROKE, 1);
-      g.strokeRect(zr.px, zr.py, zr.pw, zr.ph);
-    }
+    const zr = this.activeZone ? this.zoneRects.get(this.activeZone) : undefined;
+    if (!zr) return;
+    // active wash sits over the floor art as a subtle warm-amber tint, not an opaque
+    // fill, so the richer floor stays visible underneath.
+    g.fillStyle(COL_ROOM_ACTIVE, 0.22);
+    g.fillRect(zr.px, zr.py, zr.pw, zr.ph);
+    g.lineStyle(2, COL_ROOM_STROKE, 1);
+    g.strokeRect(zr.px, zr.py, zr.pw, zr.ph);
   }
 
   /**
-   * One-time per-zone floor render (tileset OR programmatic noir). Built once at
-   * depth -1 so it sits UNDER the `zoneGraphics` stroke/active-wash layer (depth 0)
-   * regardless of insertion order; the per-frame `drawZones` repaints only that cheap
-   * stroke layer above it. Idempotent (skips if already built).
+   * One-time floor render for ONE room (tileset OR programmatic noir). Built once per
+   * zone at depth -1 so it sits UNDER the `zoneGraphics` stroke/active-wash layer
+   * (depth 0); the per-frame `drawZones` repaints only that cheap stroke layer above
+   * it. Idempotent per zone (skips if that room's floor is already built) so re-
+   * entering a room never re-bakes its floor.
    */
-  private drawZoneFloors(): void {
-    if (this.floorsBuilt) return;
-    this.floorsBuilt = true;
+  private drawZoneFloor(zoneId: string): void {
+    if (this.floorBuiltZones.has(zoneId)) return;
+    const zr = this.zoneRects.get(zoneId);
+    if (!zr) return;
+    this.floorBuiltZones.add(zoneId);
     // Stable zone-index lookup for deterministic tileset assignment (array order).
-    const zoneIndex = new Map<string, number>();
-    this.view.map.zones.forEach((z, i) => zoneIndex.set(z.id, i));
-    for (const zr of this.zoneRects.values()) {
-      let rendered = false;
-      // 1) PREFERRED: real PixelLab Wang tileset, autotiled across the zone floor.
+    const zoneIndex = this.view.map.zones.findIndex((z) => z.id === zoneId);
+    let rendered = false;
+    // 1) PREFERRED: real PixelLab Wang tileset, autotiled across the room floor.
+    try {
+      const slug = tilesetSlugForZoneIndex(zoneIndex < 0 ? 0 : zoneIndex);
+      if (slug && this.textures.exists(wangTilesetKey(slug))) {
+        rendered = this.drawWangFloor(zr, slug);
+      }
+    } catch {
+      /* Wang render unavailable — fall through */
+    }
+    // 2) Legacy placeholder tileset (flat tiled fill) if a Wang floor didn't draw.
+    if (!rendered) {
+      const tileKey = tilesetKey(zr.zone.id);
       try {
-        const slug = tilesetSlugForZoneIndex(zoneIndex.get(zr.zone.id) ?? 0);
-        if (slug && this.textures.exists(wangTilesetKey(slug))) {
-          rendered = this.drawWangFloor(zr, slug);
+        if (this.textures.exists(tileKey)) {
+          this.add
+            .tileSprite(zr.px, zr.py, zr.pw, zr.ph, tileKey)
+            .setOrigin(0, 0)
+            .setDepth(-1);
+          rendered = true;
         }
       } catch {
-        /* Wang render unavailable — fall through */
+        /* tileSprite unavailable — fall through to the programmatic floor */
       }
-      // 2) Legacy placeholder tileset (flat tiled fill) if a Wang floor didn't draw.
-      if (!rendered) {
-        const tileKey = tilesetKey(zr.zone.id);
-        try {
-          if (this.textures.exists(tileKey)) {
-            this.add
-              .tileSprite(zr.px, zr.py, zr.pw, zr.ph, tileKey)
-              .setOrigin(0, 0)
-              .setDepth(-1);
-            rendered = true;
-          }
-        } catch {
-          /* tileSprite unavailable — fall through to the programmatic floor */
-        }
-      }
-      // 3) FALLBACK: programmatic Cold-Noir floor (always available).
-      if (!rendered) this.drawNoirFloor(zr);
     }
+    // 3) FALLBACK: programmatic Cold-Noir floor (always available).
+    if (!rendered) this.drawNoirFloor(zr);
+  }
+
+  /**
+   * ROOM-BASED render: draw the active room's floor + wash + name label, then place
+   * ONLY that room's items, doors, and home NPCs (clearing any previous room's
+   * sprites first). Called on boot and on every door transition. All cosmetic.
+   */
+  private renderActiveRoom(map: MapDef): void {
+    // Clear the previous room's actors FIRST, then draw the new room on top.
+    this.clearRoomActors();
+    this.drawZones();
+    // Room name label, repainted to the active room (tracked with the door sprites so
+    // it's cleared on the next transition and never lingers from the previous room).
+    const zr = this.activeZone ? this.zoneRects.get(this.activeZone) : undefined;
+    if (zr) {
+      const label = this.add
+        .text(zr.px + 6, zr.py + 4, zr.zone.name, {
+          fontFamily: "monospace",
+          fontSize: "11px",
+          color: "#6f8c92",
+        })
+        .setDepth(2);
+      this.doorSprites.push(label);
+    }
+    this.placeItems(map);
+    this.placeDoors(map);
+    this.placeNpcs(map);
+    this.syncNpcsToTick(true);
+  }
+
+  /** Destroy the previous room's npc/item/door (and label) sprites before a re-render. */
+  private clearRoomActors(): void {
+    for (const s of this.npcSprites) {
+      s.tween?.remove();
+      s.container.destroy();
+    }
+    this.npcSprites = [];
+    for (const s of this.itemSprites) s.destroy();
+    this.itemSprites = [];
+    for (const s of this.doorSprites) s.destroy();
+    this.doorSprites = [];
   }
 
   /**
@@ -638,8 +664,10 @@ class WorldScene extends Phaser.Scene {
     }
   }
 
+  /** ROOM-BASED: place ONLY the active room's items (zone === activeZone). */
   private placeItems(map: MapDef): void {
-    for (const item of this.view.items) {
+    const roomItems = itemsInRoom(this.view.items, this.activeZone ?? "");
+    for (const item of roomItems) {
       const center = cellCenter(map.navGrid, item.coords.x, item.coords.y);
       const glyph = this.add
         .rectangle(center.x, center.y, ITEM_SIZE, ITEM_SIZE, COL_ITEM, 1)
@@ -652,13 +680,14 @@ class WorldScene extends Phaser.Scene {
       glyph.on(Phaser.Input.Events.GAMEOBJECT_POINTER_UP, () => {
         this.handlers.onExamineItem(item.id);
       });
+      this.itemSprites.push(glyph);
     }
   }
 
-  /** Pillar 3: doors as interactable transitions (MapDef.doors). */
+  /** Pillar 3 / ROOM-BASED: place ONLY the doors LEAVING the active room (from === activeZone). */
   private placeDoors(map: MapDef): void {
-    const doors = map.doors ?? [];
-    for (const door of doors) {
+    const roomDoors = doorsFromRoom(map.doors, this.activeZone ?? "");
+    for (const door of roomDoors) {
       const center = cellCenter(map.navGrid, door.coords.x, door.coords.y);
       const glyph = this.add
         .rectangle(center.x, center.y, DOOR_SIZE, DOOR_SIZE + 8, COL_DOOR, 1)
@@ -668,9 +697,17 @@ class WorldScene extends Phaser.Scene {
       glyph.on(Phaser.Input.Events.GAMEOBJECT_POINTER_UP, () => {
         this.enterDoor(door);
       });
+      this.doorSprites.push(glyph);
     }
   }
 
+  /**
+   * ROOM-BASED transition: a door is the ONLY thing that changes the active room.
+   * Keep the cosmetic cold-veil fade, set the active zone to `door.to`, RE-RENDER the
+   * destination room (clear old room sprites, redraw the floor, place the new room's
+   * npcs/items/doors), reposition the avatar to the destination's entry cell, and
+   * report the zone change to the (authoritative) shell.
+   */
   private enterDoor(door: Door): void {
     // Cosmetic cold-veil fade on the transition (Pillar 4); the logical zone change
     // is reported to the shell, which remains authoritative over reachability.
@@ -688,9 +725,31 @@ class WorldScene extends Phaser.Scene {
     } catch {
       /* no-op */
     }
-    // Snap the avatar's logical zone to the door's destination.
-    this.setAvatarZone(door.to);
+    // Snap the active room to the door's destination and rebuild that room.
+    this.activeZone = door.to;
+    this.renderActiveRoom(this.view.map);
+    // Drop the avatar at the destination room's entry cell (mirror of the door edge).
+    this.repositionAvatarToCell(doorEntryCell(this.view.map.navGrid, door));
+
+    // LOGICAL: the door (never walking) drives the zone change. Report both the door
+    // crossing and the new zone so the server logs perception for the destination.
     this.handlers.onEnterDoor?.(door.from, door.to);
+    this.setAvatarZone(door.to);
+  }
+
+  /** Snap the avatar (cosmetic tween source) onto a cell in the active room. */
+  private repositionAvatarToCell(cell: Cell): void {
+    this.avatarCell = cell;
+    this.moveTimer?.remove();
+    this.avatarTween?.remove();
+    if (!this.avatar) return;
+    const center = cellCenter(this.view.map.navGrid, cell.col, cell.row);
+    this.avatar.setPosition(center.x, center.y);
+    try {
+      this.fx.playerLight(this, center.x, center.y, this.playerLightRadius);
+    } catch {
+      /* unlit fallback */
+    }
   }
 
   /**
@@ -758,13 +817,12 @@ class WorldScene extends Phaser.Scene {
     }
   }
 
+  /** ROOM-BASED: place ONLY the NPCs whose home is the active room (homeZone === activeZone). */
   private placeNpcs(map: MapDef): void {
-    for (const npc of this.view.npcs) {
-      const home = this.zoneRects.get(npc.homeZone);
-      const grid = map.navGrid;
-      const seat = home
-        ? { x: home.px + home.pw / 2, y: home.py + home.ph / 2 }
-        : cellCenter(grid, 0, 0);
+    const grid = map.navGrid;
+    for (const npc of npcsInRoom(this.view.npcs, this.activeZone ?? "")) {
+      // Seat at the active room's centre until the first tick sync drops it on its cell.
+      const seat = cellCenter(grid, Math.floor(grid.cols / 2), Math.floor(grid.rows / 2));
 
       // PREFER the 8-direction PixelLab sprite; else the portrait; else the amber circle.
       const slug = this.npcSlugs.get(npc.id);
@@ -803,12 +861,11 @@ class WorldScene extends Phaser.Scene {
 
   // ── Pillar 3: the walkable avatar ──
   private spawnAvatar(map: MapDef): void {
-    // Spawn in the first zone (or grid origin) — a deterministic seat.
+    // ROOM-BASED: spawn in the active room near its centre — a deterministic on-grid
+    // seat. The avatar walks freely WITHIN this room; doors move it between rooms.
     const grid = map.navGrid;
-    const firstZone = map.zones[0];
-    const range = firstZone ? zoneCellRange(grid, firstZone) : { c0: 0, r0: 0, c1: 0, r1: 0 };
-    this.avatarCell = { col: range.c0, row: range.r0 };
-    this.avatarZoneId = firstZone?.id ?? null;
+    this.avatarCell = { col: Math.floor(grid.cols / 2), row: Math.floor(grid.rows / 2) };
+    this.avatarZoneId = this.activeZone;
 
     const center = cellCenter(grid, this.avatarCell.col, this.avatarCell.row);
     // PREFER the detective's 8-direction PixelLab sprite; else the portrait; else disc.
@@ -877,9 +934,9 @@ class WorldScene extends Phaser.Scene {
   }
 
   /**
-   * Move the avatar to an ADJACENT cell with a cosmetic tween, then update its
-   * LOGICAL zone. Only the zone (snapped, integer) is reported to perception — the
-   * tween is never read by logic.
+   * Move the avatar to an ADJACENT cell with a cosmetic tween. ROOM-BASED: walking
+   * NEVER changes the logical zone — the avatar roams freely WITHIN the active room,
+   * and only a door (enterDoor) transitions rooms. The tween is never read by logic.
    */
   private stepAvatarTo(cell: Cell, throttle: boolean): void {
     if (!this.avatar) return;
@@ -910,11 +967,6 @@ class WorldScene extends Phaser.Scene {
         }
       },
     });
-    // LOGICAL update: which zone did we land in?
-    const zone = zoneOfCell(this.view.map, cell);
-    if (zone && zone.id !== this.avatarZoneId) {
-      this.setAvatarZone(zone.id);
-    }
   }
 
   private setAvatarZone(zoneId: string): void {
@@ -946,6 +998,9 @@ class WorldScene extends Phaser.Scene {
     this.syncNpcsToTick(false);
   }
 
+  /** Deterministic per-tick ambient drift for the ACTIVE room's NPCs (npcSprites only
+   *  ever holds the active room's cast — placeNpcs filters by homeZone). Each NPC's
+   *  cell is a pure f(seed,id,tick) over the full room grid; the tween is cosmetic. */
   private syncNpcsToTick(instant: boolean): void {
     const grid = this.view.map.navGrid;
     for (const sprite of this.npcSprites) {
@@ -985,33 +1040,30 @@ class WorldScene extends Phaser.Scene {
     }
   }
 
+  /**
+   * Shell-driven: frame a room. ROOM-BASED — there is no off-screen pan; "framing" a
+   * zone IS entering that room. Switches the active room, re-renders it, drops the
+   * avatar at the room centre, and reports the zone (so perception logs it). No-op if
+   * already the active room (avoids a spurious re-render/perception event).
+   */
   setActiveZone(zoneId: string): void {
+    if (!this.zoneRects.has(zoneId) || zoneId === this.activeZone) return;
     this.activeZone = zoneId;
-    if (this.zoneGraphics) this.drawZones();
-    const zr = this.zoneRects.get(zoneId);
-    if (zr) {
-      this.cameras.main.pan(zr.px + zr.pw / 2, zr.py + zr.ph / 2, 350, "Sine.easeInOut");
-      try {
-        this.fx.setZoneLighting(this, zoneId);
-      } catch {
-        /* unlit fallback */
-      }
-      // SOUND: match the ambience bed to the framed zone.
-      this.updateAmbience(zoneId);
+    this.renderActiveRoom(this.view.map);
+    const grid = this.view.map.navGrid;
+    this.repositionAvatarToCell({ col: Math.floor(grid.cols / 2), row: Math.floor(grid.rows / 2) });
+    try {
+      this.fx.setZoneLighting(this, zoneId);
+    } catch {
+      /* unlit fallback */
     }
+    this.setAvatarZone(zoneId);
   }
 
-  /** Public: route the avatar into a zone's nearest cell (used by the shell). */
+  /** Public (shell): move the player INTO a zone — in the room model that's switching
+   *  the active room (delegates to setActiveZone, which re-renders + reports). */
   movePlayerTo(zoneId: string): void {
-    const zr = this.zoneRects.get(zoneId);
-    if (!zr) return;
-    const r = zoneCellRange(this.view.map.navGrid, zr.zone);
-    // aim for the zone's center cell so the avatar ends inside the zone bounds
-    const goal: Cell = {
-      col: Math.floor((r.c0 + r.c1) / 2),
-      row: Math.floor((r.r0 + r.r1) / 2),
-    };
-    this.pathAvatarTo(goal);
+    this.setActiveZone(zoneId);
   }
 
   setPlayerLight(radius: number): void {
