@@ -45,7 +45,9 @@ import {
 } from "./assets.js";
 import { createFx, type FxQuality, type ParlorFx } from "./fx.js";
 import { npcsInRoom, itemsInRoom, doorsFromRoom, doorEntryCell } from "./room.js";
-import { roomLayout, cellToWorldX, type Placement, type RoomLayout } from "./roomLayout.js";
+import { roomLayout, cellToWorldX, type Placement } from "./roomLayout.js";
+import { mapToLevel, type RoomLevel } from "./mapToLevel.js";
+import { ZONE_MAPS } from "./zoneMaps.js";
 import { inputVector } from "./movement.js";
 import { nearestInteractable, type InteractCandidate, type InteractHit } from "./interact.js";
 
@@ -117,7 +119,7 @@ class WorldScene extends Phaser.Scene {
   private groundCollider?: Phaser.Physics.Arcade.Collider;
 
   private activeZone: string | null = null;
-  private layout?: RoomLayout;
+  private level?: RoomLevel;
 
   // ── avatar (Pillar 3) ──
   /** the physics body the camera follows + collides; its float (x,y) is COSMETIC. */
@@ -356,32 +358,21 @@ class WorldScene extends Phaser.Scene {
    */
   private buildRoom(zoneId: string, entryCol?: number): void {
     this.clearRoom();
-    const map = this.view.map;
-    const grid = map.navGrid;
-    const zone = map.zones.find((z) => z.id === zoneId) ?? map.zones[0];
-    if (!zone) return;
+    const zone = this.view.map.zones.find((z) => z.id === zoneId) ?? this.view.map.zones[0];
+    const level = this.buildLevel(zoneId, entryCol);
+    this.level = level;
 
-    const layout = roomLayout({
-      zone,
-      grid,
-      doors: doorsFromRoom(map.doors, zoneId),
-      items: itemsInRoom(this.view.items, zoneId),
-      npcs: npcsInRoom(this.view.npcs, zoneId),
-      dailySeed: this.view.dailySeed,
-    });
-    this.layout = layout;
-
-    this.cameras.main.setBounds(0, 0, layout.worldW, layout.worldH);
+    this.cameras.main.setBounds(0, 0, level.worldW, level.worldH);
     try {
-      this.physics.world.setBounds(0, 0, layout.worldW, layout.worldH);
+      this.physics.world.setBounds(0, 0, level.worldW, level.worldH);
     } catch {
       /* physics unavailable — colliders simply won't engage */
     }
 
-    this.drawBackdrop(layout, zone.name);
-    this.buildTerrain(layout);
-    for (const p of layout.placements) this.placeGlyph(p);
-    this.candidates = layout.placements.map((p) =>
+    this.drawBackdrop(level.worldW, level.worldH, zone?.name ?? zoneId);
+    this.buildTerrain(level);
+    for (const p of level.placements) this.placeGlyph(p);
+    this.candidates = level.placements.map((p) =>
       p.toZone !== undefined
         ? { id: p.id, kind: p.kind, x: p.x, y: p.surfaceY, toZone: p.toZone }
         : { id: p.id, kind: p.kind, x: p.x, y: p.surfaceY },
@@ -399,11 +390,7 @@ class WorldScene extends Phaser.Scene {
       }
     }
 
-    const spawnX =
-      entryCol !== undefined
-        ? cellToWorldX(entryCol, grid.cols, layout.worldW, grid.cellSize)
-        : Math.round(layout.worldW * 0.12);
-    this.seatAvatar(spawnX, layout.groundY);
+    this.seatAvatar(level.spawnX, level.spawnY);
 
     try {
       this.fx.setZoneLighting(this, zoneId);
@@ -411,6 +398,48 @@ class WorldScene extends Phaser.Scene {
       /* unlit fallback */
     }
     this.updateAmbience(zoneId);
+  }
+
+  /**
+   * Build the room's platformer level. PREFER the authored speakeasy tilemap (collision/
+   * doors/boundaries derived from the map); fall back to the procedural `roomLayout` for
+   * any zone without an authored map. Both yield a uniform `RoomLevel`.
+   */
+  private buildLevel(zoneId: string, entryCol?: number): RoomLevel {
+    const map = this.view.map;
+    const entities = {
+      doors: doorsFromRoom(map.doors, zoneId),
+      items: itemsInRoom(this.view.items, zoneId),
+      npcs: npcsInRoom(this.view.npcs, zoneId),
+    };
+    const spec = ZONE_MAPS[zoneId];
+    if (spec) return mapToLevel(spec, entities);
+
+    // Fallback: adapt the seeded roomLayout (ground slab + platforms) into a RoomLevel.
+    const grid = map.navGrid;
+    const zone = map.zones.find((z) => z.id === zoneId) ?? map.zones[0]!;
+    const layout = roomLayout({ zone, grid, ...entities, dailySeed: this.view.dailySeed });
+    const collisionRects = [
+      { x: 0, y: layout.groundY, w: layout.worldW, h: layout.worldH - layout.groundY },
+      ...layout.platforms.map((p) => ({ x: p.x, y: p.y, w: p.w, h: p.h })),
+    ];
+    const spawnX =
+      entryCol !== undefined
+        ? cellToWorldX(entryCol, grid.cols, layout.worldW, grid.cellSize)
+        : Math.round(layout.worldW * 0.12);
+    return {
+      tileSize: grid.cellSize,
+      cols: grid.cols,
+      rows: grid.rows,
+      worldW: layout.worldW,
+      worldH: layout.worldH,
+      groundY: layout.groundY,
+      solid: [],
+      collisionRects,
+      spawnX,
+      spawnY: layout.groundY,
+      placements: layout.placements,
+    };
   }
 
   /** Destroy the previous room's display objects + collider before a rebuild. */
@@ -423,7 +452,7 @@ class WorldScene extends Phaser.Scene {
   }
 
   /** Cold side-scroll backdrop: a vertical gradient wall + a room-name label. Cosmetic. */
-  private drawBackdrop(layout: RoomLayout, zoneName: string): void {
+  private drawBackdrop(worldW: number, worldH: number, zoneName: string): void {
     let g: Phaser.GameObjects.Graphics;
     try {
       g = this.add.graphics().setDepth(DEPTH_BACKDROP);
@@ -439,7 +468,7 @@ class WorldScene extends Phaser.Scene {
         i,
       );
       g.fillStyle(Phaser.Display.Color.GetColor(col.r, col.g, col.b), 1);
-      g.fillRect(0, Math.floor(layout.worldH * (i / bands)), layout.worldW, Math.ceil(layout.worldH / bands) + 1);
+      g.fillRect(0, Math.floor(worldH * (i / bands)), worldW, Math.ceil(worldH / bands) + 1);
     }
     this.roomObjects.push(g);
 
@@ -454,27 +483,22 @@ class WorldScene extends Phaser.Scene {
     }
   }
 
-  /** Build the ground slab + cosmetic platforms as STATIC colliders the avatar stands on. */
-  private buildTerrain(layout: RoomLayout): void {
-    const groundH = layout.worldH - layout.groundY;
-    this.addStaticBlock(
-      layout.worldW / 2,
-      layout.groundY + groundH / 2,
-      layout.worldW,
-      groundH,
-      COL_GROUND,
-      COL_GROUND_EDGE,
-      DEPTH_GROUND,
-    );
-    for (const p of layout.platforms) {
+  /**
+   * Render the level's merged collision rects as STATIC colliders the avatar stands on.
+   * PR-B placeholder skin: ground-line rects use the ground colour, elevated runs the
+   * platform colour. (PR C swaps these colored rects for the generated tileset.)
+   */
+  private buildTerrain(level: RoomLevel): void {
+    for (const r of level.collisionRects) {
+      const elevated = r.y + r.h <= level.groundY; // entirely above the walk line → a platform
       this.addStaticBlock(
-        p.x + p.w / 2,
-        p.y + p.h / 2,
-        p.w,
-        p.h,
-        COL_PLATFORM,
-        COL_PLATFORM_EDGE,
-        DEPTH_PLATFORM,
+        r.x + r.w / 2,
+        r.y + r.h / 2,
+        r.w,
+        r.h,
+        elevated ? COL_PLATFORM : COL_GROUND,
+        elevated ? COL_PLATFORM_EDGE : COL_GROUND_EDGE,
+        elevated ? DEPTH_PLATFORM : DEPTH_GROUND,
       );
     }
   }
