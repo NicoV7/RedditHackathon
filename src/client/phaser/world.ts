@@ -38,6 +38,10 @@ import {
   spriteFrameUrl,
   spriteSlugPresent,
   npcSpriteSlugForIndex,
+  OVERWORLD_CLIPS,
+  overworldFrameKey,
+  overworldFrameUrl,
+  type OverworldClip,
 } from "./assets.js";
 import { createFx, type FxQuality, type ParlorFx } from "./fx.js";
 import { npcsInRoom, itemsInRoom, doorsFromRoom, doorEntryCell } from "./room.js";
@@ -167,15 +171,22 @@ class WorldScene extends Phaser.Scene {
       /* loader unavailable — the world renders on the programmatic fallback */
     }
     this.assignPixelArt();
+    const slugs = new Set<string>(this.npcSlugs.values());
+    slugs.add(PLAYER_SPRITE_SLUG);
     try {
-      // Side-view (east) frame for each assigned NPC slug + the player; left flips it.
-      const slugs = new Set<string>(this.npcSlugs.values());
-      if (spriteSlugPresent(PLAYER_SPRITE_SLUG)) slugs.add(PLAYER_SPRITE_SLUG);
+      // PREFER the new overworld set (idle/run/jump); FALL BACK to the dialogue east
+      // frame as a side-view placeholder. Both queues are no-ops when the file is absent.
       for (const slug of slugs) {
-        const key = spriteFrameKey(slug, "east");
-        if (this.textures.exists(key)) continue;
-        const url = spriteFrameUrl(slug, "east");
-        if (url) this.load.image(key, url);
+        for (const clip of OVERWORLD_CLIPS) {
+          const owKey = overworldFrameKey(slug, clip);
+          const owUrl = overworldFrameUrl(slug, clip);
+          if (owUrl && !this.textures.exists(owKey)) this.load.image(owKey, owUrl);
+        }
+        const dirKey = spriteFrameKey(slug, "east");
+        if (spriteSlugPresent(slug) && !this.textures.exists(dirKey)) {
+          const url = spriteFrameUrl(slug, "east");
+          if (url) this.load.image(dirKey, url);
+        }
       }
     } catch {
       /* loader/art unavailable — actors fall back to portraits / blobs */
@@ -266,6 +277,7 @@ class WorldScene extends Phaser.Scene {
     this.refreshNearest(body);
     if (this.interactKey && Phaser.Input.Keyboard.JustDown(this.interactKey)) this.triggerInteract();
 
+    this.updateAvatarClip(body);
     this.syncAvatarArt();
     try {
       this.fx.playerLight(this, sprite.x, sprite.y, this.playerLightRadius);
@@ -611,6 +623,22 @@ class WorldScene extends Phaser.Scene {
     }
   }
 
+  /**
+   * Swap the avatar's overworld frame to match its movement state (airborne→jump,
+   * moving→run, else idle). No-op unless the overworld set is bundled — the dialogue/
+   * portrait fallback stays put. Cosmetic; never read by logic.
+   */
+  private updateAvatarClip(body: Phaser.Physics.Arcade.Body): void {
+    const art = this.avatarArt;
+    if (!art) return;
+    const clip: OverworldClip = !body.blocked.down ? "jump" : Math.abs(body.velocity.x) > 5 ? "run" : "idle";
+    const key = overworldFrameKey(PLAYER_SPRITE_SLUG, clip);
+    if (this.textures.exists(key) && art.texture.key !== key) {
+      art.setTexture(key);
+      this.fitImageHeight(art, AVATAR_ART_H);
+    }
+  }
+
   /** Glue the cosmetic art to the body's feet + face it L/R. Cosmetic only. */
   private syncAvatarArt(): void {
     const sprite = this.avatarBody;
@@ -629,8 +657,10 @@ class WorldScene extends Phaser.Scene {
    */
   private resolveSideArtKey(slug: string | undefined, portraitKey: string): string | null {
     if (slug) {
-      const key = spriteFrameKey(slug, "east");
-      if (this.textures.exists(key)) return key;
+      const ow = overworldFrameKey(slug, "idle");
+      if (this.textures.exists(ow)) return ow; // PREFER the overworld set
+      const dir = spriteFrameKey(slug, "east");
+      if (this.textures.exists(dir)) return dir; // dialogue side-view placeholder
     }
     if (this.textures.exists(portraitKey)) return portraitKey;
     return null;

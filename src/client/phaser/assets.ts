@@ -434,6 +434,13 @@ const TILESET_PNG_URLS: GlobUrlMap = import.meta.glob
 const TILESET_JSON: GlobModMap = import.meta.glob
   ? import.meta.glob("../assets/tilesets/*.json", { eager: true })
   : {};
+// OVERWORLD side-scroll sprite set — a SECOND set per character, SEPARATE from the
+// 8-direction DIALOGUE sprites above (a sibling dir, so the 2-segment `sprites/*/*`
+// glob never mis-ingests these 3-segment paths). One right-facing frame per movement
+// state; the scene flips X for left. Absent files leave the dialogue/portrait fallback.
+const OVERWORLD_URLS: GlobUrlMap = import.meta.glob
+  ? import.meta.glob("../assets/overworld/*/*.png", { eager: true, import: "default" })
+  : {};
 
 /** The 8 PixelLab facing directions authored per character (canvas 68×68). */
 export type SpriteDir =
@@ -509,6 +516,35 @@ export function spriteSlugPresent(slug: string): boolean {
 /** The NPC-pool slugs whose art actually shipped, in stable order (guard-filtered). */
 export function availableNpcSpriteSlugs(): string[] {
   return NPC_SPRITE_SLUGS.filter(spriteSlugPresent);
+}
+
+// ── Overworld (side-scroll) sprite set ──
+/** The movement states a character's overworld sprite renders (one frame each). */
+export type OverworldClip = "idle" | "run" | "jump";
+export const OVERWORLD_CLIPS: readonly OverworldClip[] = ["idle", "run", "jump"];
+
+/** Phaser texture key for one overworld movement-state frame. Distinct from `spr:` keys. */
+export function overworldFrameKey(slug: string, clip: OverworldClip): string {
+  return `ow:${slug}:${clip}`;
+}
+
+/** Resolve the bundled URL for an overworld frame, or undefined if its file is absent. */
+export function overworldFrameUrl(slug: string, clip: OverworldClip): string | undefined {
+  const tail = `/overworld/${slug}/${clip}.png`;
+  for (const [path, url] of Object.entries(OVERWORLD_URLS)) {
+    if (path.endsWith(tail)) return url;
+  }
+  return undefined;
+}
+
+/** True iff at least the idle frame of a slug's overworld set is bundled. */
+export function overworldSlugPresent(slug: string): boolean {
+  return overworldFrameUrl(slug, "idle") !== undefined;
+}
+
+/** Every character (player + NPC pool) whose overworld art shipped, in stable order. */
+export function availableOverworldSlugs(): string[] {
+  return [PLAYER_SPRITE_SLUG, ...NPC_SPRITE_SLUGS].filter(overworldSlugPresent);
 }
 
 /** Resolve the bundled URL for a Wang tileset PNG, or undefined if absent. */

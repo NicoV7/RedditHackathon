@@ -20,6 +20,11 @@ import {
   allAssetKeys,
   AVATAR_KEY,
   type SfxName,
+  OVERWORLD_CLIPS,
+  overworldFrameKey,
+  overworldFrameUrl,
+  overworldSlugPresent,
+  availableOverworldSlugs,
 } from "./assets.js";
 
 // Zone ids must mirror src/server/case/procedural.ts ZONE_DEFS.
@@ -96,6 +101,25 @@ describe("asset manifest", () => {
     for (const name of SFX_NAMES) {
       expect(manifest.sfx[name].note.length).toBeGreaterThan(10);
     }
+  });
+});
+
+describe("overworld sprite set (side-scroll)", () => {
+  it("defines the three movement-state clips", () => {
+    expect([...OVERWORLD_CLIPS]).toEqual(["idle", "run", "jump"]);
+  });
+
+  it("derives stable keys distinct from the dialogue `spr:` keys", () => {
+    expect(overworldFrameKey("detective", "run")).toBe("ow:detective:run");
+    expect(overworldFrameKey("lola-marsh", "idle")).toBe("ow:lola-marsh:idle");
+    expect(overworldFrameKey("detective", "idle")).not.toBe(overworldFrameKey("detective", "run"));
+  });
+
+  it("resolves to undefined / absent when no overworld art is bundled (test env)", () => {
+    // import.meta.glob is unavailable under vitest → the URL map is empty.
+    expect(overworldFrameUrl("detective", "idle")).toBeUndefined();
+    expect(overworldSlugPresent("detective")).toBe(false);
+    expect(availableOverworldSlugs()).toEqual([]);
   });
 });
 
