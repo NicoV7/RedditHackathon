@@ -90,13 +90,27 @@ export interface NavGrid {
   rows: number;
   blocked?: number[]; // blocked cell indices (row * cols + col)
 }
+/** A door links two zones. An optional precondition gates traversal — a locked
+ *  door is a first-class reachability gate the validator understands (it lowers to
+ *  an `enterZone`/precondition edge in the union graph). Omitted ⇒ always open. */
+export interface Door {
+  from: ZoneId;
+  to: ZoneId;
+  coords: { x: number; y: number };
+  unlockedBy?: Precondition;
+}
 export interface MapDef {
   zones: Zone[];
   navGrid: NavGrid;
+  doors?: Door[];
 }
 
 // ───────────────────────── NPCs (C5/C10) ─────────────────────────
 export type NpcTier = "principal" | "supporting" | "ambient";
+/** Per-instance flavor trait the player discovers during a run. FLAVOR ONLY:
+ *  never read by the validator/solver, never alters the fact graph. A quirk may
+ *  *mimic* a lie-tell (deliberate ambiguity) but changes nothing structural. */
+export type QuirkTag = string;
 export interface RoutineStep {
   zoneId: ZoneId;
   fromTick: number; // logical ticks; tick 0 = case start
@@ -107,6 +121,9 @@ export interface Persona {
   name: string;
   blurb: string;
   voice: string;
+  /** locked role (barkeep, pianist, accountant…) — drives the NPC's map station + prop
+   *  (Part 6.4) and flavor. Cosmetic: never read by the validator/solver. */
+  occupation?: string;
 }
 export interface Npc {
   id: NpcId;
@@ -115,6 +132,7 @@ export interface Npc {
   homeZone: ZoneId;
   routine: RoutineStep[];
   slice: SliceEntry[]; // projection over the instance's facts
+  quirks?: QuirkTag[]; // per-instance flavor; never read by the validator/solver
 }
 
 export interface RelationshipEdge {

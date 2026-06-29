@@ -18,6 +18,8 @@
 import Phaser from "phaser";
 import type { NominationRole } from "../../shared/api.js";
 import type { BoardCard, BoardData, BoardHandle, BoardHandlers } from "../bridge.js";
+import { CORKBOARD_KEY, loadAssets } from "./assets.js";
+import { createFx, type ParlorFx } from "./fx.js";
 
 // ── Crimson red string — the ONLY saturated red ──
 const COL_STRING = 0xd4_32_2a;
@@ -82,12 +84,15 @@ interface LinkView {
 class BoardScene extends Phaser.Scene {
   private readonly boardData: BoardData;
   private readonly handlers: BoardHandlers;
+  private readonly fx: ParlorFx;
 
   private cards: CardView[] = [];
   private cardById = new Map<string, CardView>();
   private links: LinkView[] = [];
   private linkGraphics?: Phaser.GameObjects.Graphics;
   private selectedId: string | null = null;
+  /** the Part 1.5 confidence gate — when false, naming a killer is suppressed. */
+  private accuseEnabled = true;
 
   // pinch-zoom state
   private pinchStartDist = 0;
@@ -96,15 +101,28 @@ class BoardScene extends Phaser.Scene {
   /** fired at the end of create() so the mount handle can flush queued calls */
   private readonly onReady?: () => void;
 
-  constructor(data: BoardData, handlers: BoardHandlers, onReady?: () => void) {
+  constructor(data: BoardData, handlers: BoardHandlers, fx: ParlorFx, onReady?: () => void) {
     super("board");
     this.boardData = data;
     this.handlers = handlers;
+    this.fx = fx;
     this.onReady = onReady;
+  }
+
+  preload(): void {
+    // SOUND + ART: pull the global SFX (incl. the string-snap twang) and the cork
+    // texture into this scene's caches. A safe no-op for every clip/image whose
+    // `src` is absent today (assets.ts skips it); zone tilesets aren't used here.
+    try {
+      loadAssets(this, { zones: false });
+    } catch {
+      /* loader unavailable — the board keeps its flat noir backdrop, snaps stay silent */
+    }
   }
 
   create(): void {
     this.cameras.main.setBackgroundColor(COL_BG);
+    this.drawCorkBackdrop();
     this.linkGraphics = this.add.graphics().setDepth(1);
 
     for (const card of this.boardData.cards) this.addCardInternal(card);
@@ -118,6 +136,54 @@ class BoardScene extends Phaser.Scene {
     // Cards/meters now exist — let the mount handle flush any queued addCard/
     // setStrength calls that arrived before the scene booted.
     this.onReady?.();
+  }
+
+  /**
+   * Cosmetic cork/baize backdrop behind the cards (Pillar 4). Uses the loaded
+   * corkboard texture when present (tiled to fill), ELSE bakes a subtle programmatic
+   * cold-noir baize (vignette + faint speckle) so the board reads as a real corkboard
+   * instead of a flat fill. Never read by logic; depth 0 (under links + cards).
+   */
+  private drawCorkBackdrop(): void {
+    const w = this.scale.width || 800;
+    const h = this.scale.height || 600;
+    try {
+      if (this.textures.exists(CORKBOARD_KEY)) {
+        // Real cork texture: tile it across a generous area (board space, depth 0).
+        this.add
+          .tileSprite(0, 0, w * 3, h * 3, CORKBOARD_KEY)
+          .setOrigin(0, 0)
+          .setPosition(-w, -h)
+          .setDepth(0)
+          .setAlpha(0.9);
+        return;
+      }
+    } catch {
+      /* tileSprite unavailable — fall through to the programmatic baize */
+    }
+    // Programmatic fallback: a darker baize panel + speckle + a soft vignette ring.
+    try {
+      const g = this.add.graphics().setDepth(0);
+      // baize panel slightly warmer than the camera bg so cards read as pinned ON it
+      g.fillStyle(0x18_24_27, 1);
+      g.fillRect(-w, -h, w * 3, h * 3);
+      // faint deterministic speckle (cork grain) — fixed grid, never RNG in logic
+      g.fillStyle(0x20_2e_31, 0.5);
+      for (let sx = -w; sx < w * 2; sx += 26) {
+        for (let sy = -h; sy < h * 2; sy += 26) {
+          // checker offset keeps it from looking like a hard grid
+          const off = ((sx / 26 + sy / 26) & 1) === 0 ? 0 : 13;
+          g.fillCircle(sx + off, sy + 7, 1.5);
+        }
+      }
+      // soft vignette: concentric darkening rings toward the edges (cold noir)
+      g.fillStyle(0x10_18_1a, 0.06);
+      for (let r = 0; r < 5; r++) {
+        g.fillRect(-w + r * 24, -h + r * 24, w * 3 - r * 48, h * 3 - r * 48);
+      }
+    } catch {
+      /* graphics unavailable — the camera background color is the final fallback */
+    }
   }
 
   // ── Card creation / layout ──
@@ -229,8 +295,9 @@ class BoardScene extends Phaser.Scene {
       txt?.setText(ROLE_LABEL[next]);
     }
     this.handlers.onTagNpc(view.card.id, next);
-    // Naming someone the killer is also the accusation commit point.
-    if (next === "killer") this.handlers.onAccuse(view.card.id);
+    // Naming someone the killer is also the accusation commit point — but only when
+    // the Part 1.5 confidence gate is met (server stays authoritative regardless).
+    if (next === "killer" && this.accuseEnabled) this.handlers.onAccuse(view.card.id);
   }
 
   /** Snap-grid auto-layout. Columns chosen to stay roughly square. */
@@ -271,6 +338,8 @@ class BoardScene extends Phaser.Scene {
     if (!this.hasLink(aId, bId)) {
       this.links.push({ aId, bId });
       this.redrawLinks();
+      // Pillar 4: the red string "snaps taut" with a cosmetic glow burst + puff.
+      this.snapBurst(aId, bId);
     }
     this.handlers.onLink(aId, bId);
   }
@@ -392,6 +461,57 @@ class BoardScene extends Phaser.Scene {
     view.meterFill.width = (CARD_W - 16) * clamped;
   }
 
+  /** Draw a server-confirmed or player-asserted link (idempotent). */
+  addLink(aId: string, bId: string): void {
+    if (this.hasLink(aId, bId)) return;
+    if (!this.cardById.has(aId) || !this.cardById.has(bId)) return;
+    this.links.push({ aId, bId });
+    this.redrawLinks();
+  }
+
+  /** Pillar 4 — animate the "snap taut" glow burst on an existing/just-made link. */
+  snapString(aId: string, bId: string): void {
+    this.snapBurst(aId, bId);
+  }
+
+  /**
+   * Pin a notetaker note onto the board (a server-authored `noteText` clue) as a
+   * clue card whose id is the clueId. Optionally draws an edge back to the NPC that
+   * surfaced it. Templated reformat — never untrusted prose injected as a highlight.
+   */
+  addNote(clueId: string, noteText: string, sourceNpcId?: string): void {
+    if (!this.cardById.has(clueId)) {
+      this.addCardInternal({ id: clueId, label: noteText, kind: "clue" });
+      this.relayout();
+      this.fitAll();
+    }
+    if (sourceNpcId && this.cardById.has(sourceNpcId)) {
+      this.addLink(sourceNpcId, clueId);
+      this.snapBurst(sourceNpcId, clueId);
+    }
+  }
+
+  /** Gate the Accuse action (Part 1.5). When disabled, naming a killer is suppressed. */
+  setAccuseEnabled(enabled: boolean): void {
+    this.accuseEnabled = enabled;
+  }
+
+  /** Cosmetic snap glow + puff at the link midpoint. Never read by logic (Part 4.2). */
+  private snapBurst(aId: string, bId: string): void {
+    const a = this.cardById.get(aId);
+    const b = this.cardById.get(bId);
+    if (!a || !b) return;
+    try {
+      // glow the link graphics, then a particle puff at the midpoint of the string
+      if (this.linkGraphics) this.fx.snapString(this.linkGraphics);
+      const mx = (a.cx + b.cx) / 2;
+      const my = (a.cy - CARD_H / 2 + 4 + (b.cy - CARD_H / 2 + 4)) / 2;
+      this.fx.emit(this, "puff", mx, my);
+    } catch {
+      /* no-op fallback */
+    }
+  }
+
   private teardown(): void {
     this.linkGraphics?.destroy();
   }
@@ -408,7 +528,8 @@ export function mountBoard(
   // rather than touching the not-yet-initialized scene systems.
   const pending: Array<() => void> = [];
   let booted = false;
-  const scene = new BoardScene(data, handlers, () => {
+  const fx = createFx();
+  const scene = new BoardScene(data, handlers, fx, () => {
     booted = true;
     for (const fn of pending.splice(0)) fn();
   });
@@ -436,6 +557,18 @@ export function mountBoard(
     },
     setStrength(npcId: string, value: number): void {
       whenReady(() => scene.setStrength(npcId, value));
+    },
+    addLink(aId: string, bId: string): void {
+      whenReady(() => scene.addLink(aId, bId));
+    },
+    snapString(aId: string, bId: string): void {
+      whenReady(() => scene.snapString(aId, bId));
+    },
+    setAccuseEnabled(enabled: boolean): void {
+      whenReady(() => scene.setAccuseEnabled(enabled));
+    },
+    addNote(clueId: string, noteText: string, sourceNpcId?: string): void {
+      whenReady(() => scene.addNote(clueId, noteText, sourceNpcId));
     },
     destroy(): void {
       game.destroy(true);
