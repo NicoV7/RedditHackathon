@@ -28,7 +28,7 @@ import {
 } from "./assets.js";
 
 // Zone ids must mirror src/server/case/procedural.ts ZONE_DEFS.
-const GENERATOR_ZONES = ["parlor", "kitchen", "garden", "study", "cellar"] as const;
+const GENERATOR_ZONES = ["bar", "lot", "backbar", "alley"] as const;
 const SFX_NAMES: SfxName[] = ["footstep", "lieSting", "stringSnap", "gotcha", "accuse", "doorOpen"];
 
 /** A loader stub that records every queue call and reports nothing pre-loaded. */
@@ -60,7 +60,7 @@ describe("asset manifest", () => {
 
   it("falls back to the default bundle for an unmapped zone", () => {
     expect(zoneBundle("does-not-exist")).toBe(manifest.defaultZone);
-    expect(zoneBundle("parlor")).toBe(manifest.zones.parlor);
+    expect(zoneBundle("bar")).toBe(manifest.zones.bar);
   });
 
   it("defines all six stable SFX keys", () => {
@@ -71,10 +71,10 @@ describe("asset manifest", () => {
   });
 
   it("derives stable, distinct keys per helper", () => {
-    expect(tilesetKey("parlor")).toBe("tileset:parlor");
-    expect(ambienceKey("parlor")).toBe("ambience:parlor");
-    expect(zoneNormalKey("parlor")).toBe("normal:parlor");
-    expect(tilesetKey("parlor")).not.toBe(ambienceKey("parlor"));
+    expect(tilesetKey("bar")).toBe("tileset:bar");
+    expect(ambienceKey("bar")).toBe("ambience:bar");
+    expect(zoneNormalKey("bar")).toBe("normal:bar");
+    expect(tilesetKey("bar")).not.toBe(ambienceKey("bar"));
   });
 
   it("emits a fully unique key set", () => {
@@ -82,14 +82,14 @@ describe("asset manifest", () => {
     expect(new Set(keys).size).toBe(keys.length);
     // sanity: globals + per-zone keys are all present
     expect(keys).toContain(AVATAR_KEY);
-    expect(keys).toContain(tilesetKey("cellar"));
+    expect(keys).toContain(tilesetKey("alley"));
     expect(keys).toContain(sfxKey("lieSting"));
   });
 
   it("ships the two placeholder images that actually exist on disk", () => {
     // These are the only `src`-present images today (loader must be exercised).
     expect(manifest.lightCookie.src).toBeTruthy();
-    expect(manifest.zones.parlor!.tileset.src).toBeTruthy();
+    expect(manifest.zones.bar!.tileset.src).toBeTruthy();
   });
 
   it("documents every not-yet-authored slot with a note", () => {
@@ -133,10 +133,10 @@ describe("loadAssets", () => {
     const { scene, image, spritesheet, audio } = makeScene();
     const report = loadAssets(scene);
 
-    // The real placeholder images load eagerly: the 5 mapped zone tilesets +
-    // the light cookie = 6. The default-zone bundle is a fallback for unmapped
+    // The real placeholder images load eagerly: the 4 mapped zone tilesets +
+    // the light cookie = 5. The default-zone bundle is a fallback for unmapped
     // ids (zoneBundle/loadZoneAssets), so it is NOT eager-preloaded here.
-    expect(report.images).toBe(6);
+    expect(report.images).toBe(5);
     // No avatar/NPC sheet art exists yet → spritesheet never queued.
     expect(report.spritesheets).toBe(0);
     expect(spritesheet).not.toHaveBeenCalled();
@@ -150,12 +150,12 @@ describe("loadAssets", () => {
   });
 
   it("does not re-queue assets already present in the texture cache", () => {
-    const { scene, image } = makeScene({ existingTextures: [tilesetKey("parlor")] });
+    const { scene, image } = makeScene({ existingTextures: [tilesetKey("bar")] });
     loadAssets(scene);
-    // parlor tileset already cached → not re-queued; others still queue.
+    // bar tileset already cached → not re-queued; others still queue.
     const calledKeys = image.mock.calls.map((c) => c[0]);
-    expect(calledKeys).not.toContain(tilesetKey("parlor"));
-    expect(calledKeys).toContain(tilesetKey("kitchen"));
+    expect(calledKeys).not.toContain(tilesetKey("bar"));
+    expect(calledKeys).toContain(tilesetKey("lot"));
   });
 
   it("can defer zone art via { zones:false } (lazy per-zone loading)", () => {
@@ -164,7 +164,7 @@ describe("loadAssets", () => {
     const calledKeys = image.mock.calls.map((c) => c[0]);
     // Globals (light cookie) still load; zone tilesets are deferred.
     expect(calledKeys).toContain(manifest.lightCookie.key);
-    expect(calledKeys).not.toContain(tilesetKey("parlor"));
+    expect(calledKeys).not.toContain(tilesetKey("bar"));
     // Only the light cookie image is present today among globals.
     expect(report.images).toBe(1);
   });
@@ -173,17 +173,17 @@ describe("loadAssets", () => {
     const { scene } = makeScene({ hasAudioMethod: false });
     const report = loadAssets(scene);
     expect(report.audio).toBe(0);
-    // Images still load even though audio is unavailable (5 tilesets + cookie).
-    expect(report.images).toBe(6);
+    // Images still load even though audio is unavailable (4 tilesets + cookie).
+    expect(report.images).toBe(5);
   });
 });
 
 describe("loadZoneAssets", () => {
   it("queues just one zone's tileset and is total for unmapped ids", () => {
     const a = makeScene();
-    const r1 = loadZoneAssets(a.scene, "kitchen");
-    expect(r1.images).toBe(1); // kitchen tileset (placeholder src present)
-    expect(a.image).toHaveBeenCalledWith(tilesetKey("kitchen"), expect.any(String));
+    const r1 = loadZoneAssets(a.scene, "lot");
+    expect(r1.images).toBe(1); // lot tileset (placeholder src present)
+    expect(a.image).toHaveBeenCalledWith(tilesetKey("lot"), expect.any(String));
 
     const b = makeScene();
     const r2 = loadZoneAssets(b.scene, "nope-unmapped");
@@ -193,6 +193,6 @@ describe("loadZoneAssets", () => {
   });
 
   it("is a safe no-op for a null scene", () => {
-    expect(loadZoneAssets(null, "parlor")).toEqual({ images: 0, spritesheets: 0, audio: 0, skipped: 0 });
+    expect(loadZoneAssets(null, "bar")).toEqual({ images: 0, spritesheets: 0, audio: 0, skipped: 0 });
   });
 });

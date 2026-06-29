@@ -151,31 +151,27 @@ function zone(zoneId: ZoneId, note: string, ambienceNote: string): ZoneAssets {
 
 export const manifest: AssetManifest = {
   zones: {
-    // Cold Lovecraftian-Noir 1920s speakeasy "The Drowned Lily".
-    parlor: zone(
-      "parlor",
-      "Bar-floor tileset: warm amber lamplight over teal-charcoal boards, brass rail, piano corner. 16px tiles, target sheet 256×256 (PixelLab/CC0). src/client/assets/tilesets/parlor.png",
-      "Looping jazz murmur + glass clink, ~12s seamless loop, mono, ≤120 KB. src/client/assets/audio/ambience-parlor.mp3",
+    // Cold Lovecraftian-Noir 1920s speakeasy "The Drowned Lily". Ids mirror
+    // src/server/case/procedural.ts ZONE_DEFS (bar = the start/hub).
+    bar: zone(
+      "bar",
+      "Bar-floor tileset: warm amber lamplight over polished oak boards, brass rail, mahogany bar-top, piano corner. 16px tiles, target sheet 256×256 (PixelLab/CC0). src/client/assets/tilesets/bar.png",
+      "Looping jazz murmur + glass clink, ~12s seamless loop, mono, ≤120 KB. src/client/assets/audio/ambience-bar.mp3",
     ),
-    kitchen: zone(
-      "kitchen",
-      "Kitchen tileset: tile floor, steel counters, hanging pots; cold steam haze. 16px, 256×256. src/client/assets/tilesets/kitchen.png",
-      "Looping kitchen clatter + low boiler hum, ~10s, mono, ≤120 KB. src/client/assets/audio/ambience-kitchen.mp3",
+    lot: zone(
+      "lot",
+      "Parking-lot exterior tileset: cracked asphalt + concrete curb, a parked 1920s sedan, fog; cold palette. 16px, 256×256. src/client/assets/tilesets/lot.png",
+      "Looping night wind + distant traffic + a far car horn, ~14s, mono, ≤140 KB. src/client/assets/audio/ambience-lot.mp3",
     ),
-    garden: zone(
-      "garden",
-      "Garden/alley exterior tileset: wet cobbles, iron fence, fog. Coldest palette skew. 16px, 256×256. src/client/assets/tilesets/garden.png",
-      "Looping night rain + distant traffic, ~14s, mono, ≤140 KB. src/client/assets/audio/ambience-garden.mp3",
+    backbar: zone(
+      "backbar",
+      "Behind-the-bar back room tileset: brick + oak casks, bottle shelves, a desk and ledgers; dim staff light (Perception light shines here). 16px, 256×256. src/client/assets/tilesets/backbar.png",
+      "Looping clock tick + muffled music through the wall, ~10s, mono, ≤100 KB. src/client/assets/audio/ambience-backbar.mp3",
     ),
-    study: zone(
-      "study",
-      "Study/back-room tileset: rugs, ledgers, a desk; tense low light. 16px, 256×256. src/client/assets/tilesets/study.png",
-      "Looping clock tick + muffled music through a wall, ~10s, mono, ≤100 KB. src/client/assets/audio/ambience-study.mp3",
-    ),
-    cellar: zone(
-      "cellar",
-      "Cellar/storage tileset: brick, casks, single dim bulb; near-dark (Perception light shines here). 16px, 256×256. src/client/assets/tilesets/cellar.png",
-      "Looping drip + electrical buzz, ~8s, mono, ≤90 KB. src/client/assets/audio/ambience-cellar.mp3",
+    alley: zone(
+      "alley",
+      "Back-alley exterior tileset: wet cobbles, brick, iron fire-escape, a dumpster, fog. Coldest palette skew. 16px, 256×256. src/client/assets/tilesets/alley.png",
+      "Looping night rain + drip + distant traffic, ~14s, mono, ≤140 KB. src/client/assets/audio/ambience-alley.mp3",
     ),
   },
   defaultZone: zone(
