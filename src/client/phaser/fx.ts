@@ -85,7 +85,11 @@ const FACULTY_TINT: Record<FacultyId, number> = {
 const ZONE_MOOD: Record<string, { ambient: number; warm: boolean }> = {
   alley: { ambient: 0x14_18_22, warm: false },
   outside: { ambient: 0x12_16_20, warm: false },
+  lot: { ambient: 0x12_16_20, warm: false }, // parking lot — cold exterior
   kitchen: { ambient: 0x22_26_22, warm: true },
+  // "backbar" MUST precede "bar": moodKey returns the first key the zoneId includes, so
+  // this dim staff-room mood wins over the warm "bar" substring for "behind the bar".
+  backbar: { ambient: 0x1a_20_24, warm: false }, // behind the bar — dim staff room
   bar: { ambient: 0x2a_24_1c, warm: true },
   vip: { ambient: 0x26_1e_22, warm: true },
   coatcheck: { ambient: 0x1e_22_28, warm: false },

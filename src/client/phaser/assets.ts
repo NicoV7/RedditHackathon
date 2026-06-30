@@ -151,31 +151,27 @@ function zone(zoneId: ZoneId, note: string, ambienceNote: string): ZoneAssets {
 
 export const manifest: AssetManifest = {
   zones: {
-    // Cold Lovecraftian-Noir 1920s speakeasy "The Drowned Lily".
-    parlor: zone(
-      "parlor",
-      "Bar-floor tileset: warm amber lamplight over teal-charcoal boards, brass rail, piano corner. 16px tiles, target sheet 256×256 (PixelLab/CC0). src/client/assets/tilesets/parlor.png",
-      "Looping jazz murmur + glass clink, ~12s seamless loop, mono, ≤120 KB. src/client/assets/audio/ambience-parlor.mp3",
+    // Cold Lovecraftian-Noir 1920s speakeasy "The Drowned Lily". Ids mirror
+    // src/server/case/procedural.ts ZONE_DEFS (bar = the start/hub).
+    bar: zone(
+      "bar",
+      "Bar-floor tileset: warm amber lamplight over polished oak boards, brass rail, mahogany bar-top, piano corner. 16px tiles, target sheet 256×256 (PixelLab/CC0). src/client/assets/tilesets/bar.png",
+      "Looping jazz murmur + glass clink, ~12s seamless loop, mono, ≤120 KB. src/client/assets/audio/ambience-bar.mp3",
     ),
-    kitchen: zone(
-      "kitchen",
-      "Kitchen tileset: tile floor, steel counters, hanging pots; cold steam haze. 16px, 256×256. src/client/assets/tilesets/kitchen.png",
-      "Looping kitchen clatter + low boiler hum, ~10s, mono, ≤120 KB. src/client/assets/audio/ambience-kitchen.mp3",
+    lot: zone(
+      "lot",
+      "Parking-lot exterior tileset: cracked asphalt + concrete curb, a parked 1920s sedan, fog; cold palette. 16px, 256×256. src/client/assets/tilesets/lot.png",
+      "Looping night wind + distant traffic + a far car horn, ~14s, mono, ≤140 KB. src/client/assets/audio/ambience-lot.mp3",
     ),
-    garden: zone(
-      "garden",
-      "Garden/alley exterior tileset: wet cobbles, iron fence, fog. Coldest palette skew. 16px, 256×256. src/client/assets/tilesets/garden.png",
-      "Looping night rain + distant traffic, ~14s, mono, ≤140 KB. src/client/assets/audio/ambience-garden.mp3",
+    backbar: zone(
+      "backbar",
+      "Behind-the-bar back room tileset: brick + oak casks, bottle shelves, a desk and ledgers; dim staff light (Perception light shines here). 16px, 256×256. src/client/assets/tilesets/backbar.png",
+      "Looping clock tick + muffled music through the wall, ~10s, mono, ≤100 KB. src/client/assets/audio/ambience-backbar.mp3",
     ),
-    study: zone(
-      "study",
-      "Study/back-room tileset: rugs, ledgers, a desk; tense low light. 16px, 256×256. src/client/assets/tilesets/study.png",
-      "Looping clock tick + muffled music through a wall, ~10s, mono, ≤100 KB. src/client/assets/audio/ambience-study.mp3",
-    ),
-    cellar: zone(
-      "cellar",
-      "Cellar/storage tileset: brick, casks, single dim bulb; near-dark (Perception light shines here). 16px, 256×256. src/client/assets/tilesets/cellar.png",
-      "Looping drip + electrical buzz, ~8s, mono, ≤90 KB. src/client/assets/audio/ambience-cellar.mp3",
+    alley: zone(
+      "alley",
+      "Back-alley exterior tileset: wet cobbles, brick, iron fire-escape, a dumpster, fog. Coldest palette skew. 16px, 256×256. src/client/assets/tilesets/alley.png",
+      "Looping night rain + drip + distant traffic, ~14s, mono, ≤140 KB. src/client/assets/audio/ambience-alley.mp3",
     ),
   },
   defaultZone: zone(
@@ -423,16 +419,39 @@ declare global {
 // build-emitted, content-hashed URL — so `{ eager, import:"default" }` (NOT a `?url`
 // query, which Rollup may tree-shake when the map is only read dynamically) gives a
 // `{ relativePath: url }` map that reliably emits every matched asset.
-const SPRITE_URLS: GlobUrlMap = import.meta.glob
-  ? import.meta.glob("../assets/sprites/*/*.png", { eager: true, import: "default" })
+const SPRITE_URLS: GlobUrlMap = typeof document !== "undefined"
+  ? import.meta.glob!("../assets/sprites/*/*.png", { eager: true, import: "default" })
   : {};
-const TILESET_PNG_URLS: GlobUrlMap = import.meta.glob
-  ? import.meta.glob("../assets/tilesets/*.png", { eager: true, import: "default" })
+const TILESET_PNG_URLS: GlobUrlMap = typeof document !== "undefined"
+  ? import.meta.glob!("../assets/tilesets/*.png", { eager: true, import: "default" })
   : {};
 // JSON Wang-metadata: import the parsed object directly (not a URL) so world.ts can
 // build the corner atlas synchronously without a fetch.
-const TILESET_JSON: GlobModMap = import.meta.glob
-  ? import.meta.glob("../assets/tilesets/*.json", { eager: true })
+const TILESET_JSON: GlobModMap = typeof document !== "undefined"
+  ? import.meta.glob!("../assets/tilesets/*.json", { eager: true })
+  : {};
+// OVERWORLD side-scroll sprite set — a SECOND set per character, SEPARATE from the
+// 8-direction DIALOGUE sprites above (a sibling dir, so the 2-segment `sprites/*/*`
+// glob never mis-ingests these 3-segment paths). One right-facing frame per movement
+// state; the scene flips X for left. Absent files leave the dialogue/portrait fallback.
+const OVERWORLD_URLS: GlobUrlMap = typeof document !== "undefined"
+  ? import.meta.glob!("../assets/overworld/*/*.png", { eager: true, import: "default" })
+  : {};
+// MAP art (PixelLab): a sidescroller TILESET per zone (the ground/platform skin) +
+// side-view PROP images. The tilemap layout + collision live in zoneMaps.ts/mapToLevel.ts;
+// these only skin the solid cells / decorate the rooms. Absent files → the placeholder
+// colored-block render (PR B) stays. Tilesets: maps/<zone>/tileset.png; props: maps/props/<id>.png.
+const MAP_TILESET_URLS: GlobUrlMap = typeof document !== "undefined"
+  ? import.meta.glob!("../assets/maps/*/tileset.png", { eager: true, import: "default" })
+  : {};
+const MAP_PROP_URLS: GlobUrlMap = typeof document !== "undefined"
+  ? import.meta.glob!("../assets/maps/props/*.png", { eager: true, import: "default" })
+  : {};
+// Each map tileset ships a Wang-corner metadata JSON (PixelLab) parsed by wang.ts to
+// pick fill/edge tiles. Imported as the parsed object (not a URL) so the scene autotiles
+// synchronously — same idiom as the legacy top-down TILESET_JSON above.
+const MAP_TILESET_META: GlobModMap = typeof document !== "undefined"
+  ? import.meta.glob!("../assets/maps/*/tileset.json", { eager: true })
   : {};
 
 /** The 8 PixelLab facing directions authored per character (canvas 68×68). */
@@ -509,6 +528,77 @@ export function spriteSlugPresent(slug: string): boolean {
 /** The NPC-pool slugs whose art actually shipped, in stable order (guard-filtered). */
 export function availableNpcSpriteSlugs(): string[] {
   return NPC_SPRITE_SLUGS.filter(spriteSlugPresent);
+}
+
+// ── Overworld (side-scroll) sprite set ──
+/** The movement states a character's overworld sprite renders (one frame each). */
+export type OverworldClip = "idle" | "run" | "jump";
+export const OVERWORLD_CLIPS: readonly OverworldClip[] = ["idle", "run", "jump"];
+
+/** Phaser texture key for one overworld movement-state frame. Distinct from `spr:` keys. */
+export function overworldFrameKey(slug: string, clip: OverworldClip): string {
+  return `ow:${slug}:${clip}`;
+}
+
+/** Resolve the bundled URL for an overworld frame, or undefined if its file is absent. */
+export function overworldFrameUrl(slug: string, clip: OverworldClip): string | undefined {
+  const tail = `/overworld/${slug}/${clip}.png`;
+  for (const [path, url] of Object.entries(OVERWORLD_URLS)) {
+    if (path.endsWith(tail)) return url;
+  }
+  return undefined;
+}
+
+/** True iff at least the idle frame of a slug's overworld set is bundled. */
+export function overworldSlugPresent(slug: string): boolean {
+  return overworldFrameUrl(slug, "idle") !== undefined;
+}
+
+/** Every character (player + NPC pool) whose overworld art shipped, in stable order. */
+export function availableOverworldSlugs(): string[] {
+  return [PLAYER_SPRITE_SLUG, ...NPC_SPRITE_SLUGS].filter(overworldSlugPresent);
+}
+
+// ── Map art (per-zone sidescroller tileset + side-view props) ──
+/** Phaser texture key for a zone's sidescroller tileset sheet. */
+export function mapTilesetKey(zoneId: string): string {
+  return `maptiles:${zoneId}`;
+}
+/** Resolve the bundled URL for a zone's map tileset, or undefined if its file is absent. */
+export function mapTilesetUrl(zoneId: string): string | undefined {
+  const tail = `/maps/${zoneId}/tileset.png`;
+  for (const [path, url] of Object.entries(MAP_TILESET_URLS)) {
+    if (path.endsWith(tail)) return url;
+  }
+  return undefined;
+}
+/** True iff a zone's map tileset shipped. */
+export function mapTilesetPresent(zoneId: string): boolean {
+  return mapTilesetUrl(zoneId) !== undefined;
+}
+/** Resolve the parsed Wang metadata for a zone's map tileset, or undefined if absent. */
+export function mapTilesetMeta(zoneId: string): unknown {
+  const tail = `/maps/${zoneId}/tileset.json`;
+  for (const [path, mod] of Object.entries(MAP_TILESET_META)) {
+    if (path.endsWith(tail)) {
+      const m = mod as { default?: unknown };
+      return m.default ?? mod;
+    }
+  }
+  return undefined;
+}
+
+/** Phaser texture key for a side-view map prop image. */
+export function mapPropKey(propId: string): string {
+  return `mapprop:${propId}`;
+}
+/** Resolve the bundled URL for a map prop, or undefined if its file is absent. */
+export function mapPropUrl(propId: string): string | undefined {
+  const tail = `/maps/props/${propId}.png`;
+  for (const [path, url] of Object.entries(MAP_PROP_URLS)) {
+    if (path.endsWith(tail)) return url;
+  }
+  return undefined;
 }
 
 /** Resolve the bundled URL for a Wang tileset PNG, or undefined if absent. */

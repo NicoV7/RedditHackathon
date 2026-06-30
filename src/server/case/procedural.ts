@@ -59,12 +59,16 @@ const PERSONAS: Record<string, { blurb: string; voice: string }> = {
   "Old Cobb": { blurb: "The half-blind piano man who hears it all.", voice: "riddling" },
   "Birdie": { blurb: "The coat-check girl who clocks every arrival.", voice: "bright" },
 };
+// The Drowned Lily's four rooms (1920s speakeasy). The BAR is the door-graph root —
+// always the player's start/hub; the other three are shuffled per day (buildMap) for
+// door-graph + locked-room variety. Zone ids/names are client-render only (cosmetic for
+// solvability); this list is mirrored by src/client/phaser/assets.ts (manifest.zones)
+// and assets.test.ts (GENERATOR_ZONES).
 const ZONE_DEFS: Array<{ id: string; name: string; tags: string[]; mood: string }> = [
-  { id: "parlor", name: "The Parlor", tags: ["social", "host"], mood: "warm" },
-  { id: "kitchen", name: "The Kitchen", tags: ["servants", "food"], mood: "busy" },
-  { id: "garden", name: "The Garden", tags: ["outdoor", "quiet"], mood: "cold" },
-  { id: "study", name: "The Study", tags: ["private", "documents"], mood: "tense" },
-  { id: "cellar", name: "The Cellar", tags: ["hidden", "storage"], mood: "dim" },
+  { id: "bar", name: "The Bar", tags: ["social", "bar", "host"], mood: "warm" },
+  { id: "lot", name: "The Parking Lot", tags: ["outdoor", "cars", "quiet"], mood: "cold" },
+  { id: "backbar", name: "Behind the Bar", tags: ["private", "staff", "storage"], mood: "dim" },
+  { id: "alley", name: "The Back Alley", tags: ["outdoor", "hidden", "smoke"], mood: "cold" },
 ];
 const ITEM_KINDS: readonly ItemKind[] = ["drink", "food", "trash", "effect", "document", "weapon"];
 
@@ -245,7 +249,11 @@ function doorEdgeCell(grid: NavGrid, slot: number): { x: number; y: number } {
 }
 
 function buildMap(rng: Rng, keyItemId?: string): { map: MapDef; zoneIds: string[]; gateByZone: Map<string, Precondition> } {
-  const chosen = rng.shuffle(ZONE_DEFS).slice(0, 4);
+  // The Bar is the speakeasy floor — always the start/hub (zones[0] = the door-graph
+  // root, where the player spawns). Shuffle the other rooms for per-day door-graph +
+  // locked-room variety; still seeded → deterministic.
+  const bar = ZONE_DEFS[0]!; // the speakeasy floor — pinned as zones[0]
+  const chosen = [bar, ...rng.shuffle(ZONE_DEFS.slice(1))];
   // The door GRAPH is built over the legacy 2×2 grid-block bounds so adjacency (and
   // therefore the spanning tree + the gated edge) stays byte-identical to before.
   const zones: Zone[] = chosen.map((z, i) => ({
