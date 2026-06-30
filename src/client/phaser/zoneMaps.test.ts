@@ -83,4 +83,28 @@ describe.each(ZONE_IDS)("ZONE_MAPS[%s]", (id) => {
     expect(level.spawnX).toBeGreaterThanOrEqual(0);
     expect(level.spawnX).toBeLessThanOrEqual(level.worldW);
   });
+
+  it("gives every cosmetic prop marker a non-empty propId", () => {
+    const props = spec.markers.filter((m) => m.kind === "prop");
+    expect(props.length).toBeGreaterThan(0); // each room is decorated
+    for (const p of props) {
+      expect(typeof p.propId).toBe("string");
+      expect((p.propId ?? "").length).toBeGreaterThan(0);
+    }
+  });
+
+  it("floor-snaps every cosmetic prop onto a real surface", () => {
+    const level = mapToLevel(spec, { doors: [], items: [], npcs: [] });
+    const propMarkers = spec.markers.filter((m) => m.kind === "prop");
+    expect(level.props).toHaveLength(propMarkers.length); // each prop marker → one PropPlacement
+    expect(level.props.map((p) => p.id)).toEqual(propMarkers.map((m) => m.propId));
+    for (const p of level.props) {
+      expect(p.id.length).toBeGreaterThan(0);
+      expect(p.x).toBeGreaterThanOrEqual(0);
+      expect(p.x).toBeLessThanOrEqual(level.worldW);
+      expect(p.surfaceY).toBeGreaterThan(0);
+      expect(p.surfaceY).toBeLessThanOrEqual(level.groundY); // on the ground or an elevated platform
+      expect(p.surfaceY % spec.tileSize).toBe(0); // snapped to a tile-top
+    }
+  });
 });

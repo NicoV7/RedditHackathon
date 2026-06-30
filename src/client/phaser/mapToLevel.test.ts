@@ -97,6 +97,66 @@ describe("mapToLevel — placements", () => {
   });
 });
 
+describe("mapToLevel — props", () => {
+  it("emits a floor-snapped PropPlacement for each prop marker (id, x, surfaceY)", () => {
+    const l = mapToLevel(
+      spec({
+        markers: [
+          { kind: "spawn", col: 1, row: 4 },
+          { kind: "prop", col: 3, row: 2, propId: "lamp" }, // floats above the ledge → snaps to row 3
+          { kind: "prop", col: 6, row: 4, propId: "rug" }, // already on the ground
+        ],
+      }),
+      entities(),
+    );
+    expect(l.props).toEqual([
+      { id: "lamp", x: 56, surfaceY: 48 }, // col 3 → 3×16+8; row-3 ledge top
+      { id: "rug", x: 104, surfaceY: 64 }, // col 6 → 6×16+8; ground line
+    ]);
+  });
+
+  it("skips a prop marker that has no propId", () => {
+    const l = mapToLevel(
+      spec({
+        markers: [
+          { kind: "spawn", col: 1, row: 4 },
+          { kind: "prop", col: 3, row: 2 }, // no propId → skipped
+          { kind: "prop", col: 6, row: 4, propId: "rug" },
+        ],
+      }),
+      entities(),
+    );
+    expect(l.props).toEqual([{ id: "rug", x: 104, surfaceY: 64 }]);
+  });
+
+  it("keeps props out of placements (decor, never colliders/entities)", () => {
+    const l = mapToLevel(
+      spec({
+        markers: [
+          { kind: "spawn", col: 1, row: 4 },
+          { kind: "prop", col: 3, row: 2, propId: "lamp" },
+        ],
+      }),
+      entities(),
+    );
+    expect(l.placements.map((p) => p.id)).not.toContain("lamp");
+  });
+
+  it("is deterministic: identical input → identical props", () => {
+    const make = () =>
+      mapToLevel(
+        spec({
+          markers: [
+            { kind: "spawn", col: 1, row: 4 },
+            { kind: "prop", col: 3, row: 2, propId: "lamp" },
+          ],
+        }),
+        entities(),
+      );
+    expect(make().props).toEqual(make().props);
+  });
+});
+
 describe("mapToLevel — determinism", () => {
   it("is deterministic: identical input → identical level", () => {
     expect(mapToLevel(spec(), entities())).toEqual(mapToLevel(spec(), entities()));

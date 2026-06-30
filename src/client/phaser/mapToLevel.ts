@@ -22,11 +22,15 @@ export interface MapPlatform {
   row: number;
   len: number;
 }
-/** An anchor placed in an AIR cell; its feet rest on the nearest solid tile below it. */
+/**
+ * An anchor placed in an AIR cell; its feet rest on the nearest solid tile below it.
+ * `"prop"` markers are cosmetic decor (carry a `propId`); every other kind anchors an entity.
+ */
 export interface MapMarker {
-  kind: "spawn" | "door" | "item" | "npc";
+  kind: "spawn" | "door" | "item" | "npc" | "prop";
   col: number;
   row: number;
+  propId?: string;
 }
 /** An authored room tilemap (coordinate-based so there's no fragile ASCII counting). */
 export interface ZoneMapSpec {
@@ -46,6 +50,16 @@ export interface Rect {
   h: number;
 }
 
+/**
+ * A cosmetic decor prop floor-snapped onto a surface (integer world pixels).
+ * Pure render skin — NOT a collider and NOT in `placements`; never read by game logic.
+ */
+export interface PropPlacement {
+  id: string;
+  x: number;
+  surfaceY: number; // top of the floor/platform the prop rests on
+}
+
 /** A fully-derived side-scroll level. All fields are integer world pixels. */
 export interface RoomLevel {
   tileSize: number;
@@ -59,6 +73,7 @@ export interface RoomLevel {
   spawnX: number;
   spawnY: number; // top of the tile the player spawns on
   placements: Placement[]; // doors, then items, then NPCs — stable order
+  props: PropPlacement[]; // cosmetic decor (floor-snapped) — in authored marker order; never colliders
 }
 
 /** The server-authoritative entities to anchor into this room (membership is server-owned). */
@@ -168,6 +183,18 @@ export function mapToLevel(spec: ZoneMapSpec, entities: LevelEntities): RoomLeve
     return { id: n.id, kind: "npc", x: at.x, surfaceY: at.surfaceY };
   });
 
+  // Cosmetic props: each authored "prop" marker → a floor-snapped decor anchor (same snapping as
+  // the entity anchors). No propId ⇒ skipped. Props are render-only — never colliders, never placements.
+  const props: PropPlacement[] = [];
+  for (const m of spec.markers) {
+    if (m.kind !== "prop" || !m.propId) continue;
+    props.push({
+      id: m.propId,
+      x: cellCenterX(m.col, tileSize),
+      surfaceY: surfaceYAt(solid, m.col, m.row, tileSize, groundY),
+    });
+  }
+
   return {
     tileSize,
     cols,
@@ -180,5 +207,6 @@ export function mapToLevel(spec: ZoneMapSpec, entities: LevelEntities): RoomLeve
     spawnX,
     spawnY,
     placements: [...doorPlacements, ...itemPlacements, ...npcPlacements],
+    props,
   };
 }

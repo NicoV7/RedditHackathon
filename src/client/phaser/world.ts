@@ -45,6 +45,8 @@ import {
   mapTilesetKey,
   mapTilesetUrl,
   mapTilesetMeta,
+  mapPropKey,
+  mapPropUrl,
 } from "./assets.js";
 import { buildWangAtlas, wangRectForCorners, type WangAtlas, type WangTilesetMeta } from "./wang.js";
 import { createFx, type FxQuality, type ParlorFx } from "./fx.js";
@@ -71,6 +73,25 @@ const COL_AVATAR = 0xcf_dd_df; // pale lamplit detective (blob fallback)
 const COL_AVATAR_STROKE = 0x8f_a8_ac;
 const COL_DOOR = 0x9a_8a_b0; // muted violet door glyph
 const COL_DOOR_STROKE = 0x5a_4a_70;
+const COL_DOOR_LOCKED = 0x6e_4a_4a; // barred door — rust/red cast (a server-authoritative gate)
+const COL_DOOR_LOCKED_STROKE = 0x46_2c_2c;
+
+// Canonical per-zone mood (the case's `Zone.mood`, normalised). Drives backdrop + gaslight.
+type ZoneMood = "warm" | "cold" | "dim";
+
+/** Per-mood backdrop gradient (top→bottom). Cosmetic; keyed off the active zone's mood. */
+const BACKDROP_MOODS: Record<ZoneMood, { top: number; bot: number }> = {
+  warm: { top: 0x17_10_08, bot: 0x2e_21_13 }, // bar — amber-lit room
+  cold: { top: 0x0c_10_16, bot: 0x1a_26_32 }, // lot / alley — cold blue-grey exterior
+  dim: { top: 0x07_08_09, bot: 0x12_18_1b }, // backbar — dim near-black staff room
+};
+
+/** Mood → an fx ZONE_MOOD key fx.setZoneLighting recognises (warm/cold/dim aren't fx keys). */
+const FX_MOOD_KEY: Record<ZoneMood, string> = { warm: "bar", cold: "alley", dim: "backbar" };
+
+// ── Camera framing (COSMETIC — never read by logic; bounds still clamp the scroll) ──
+const CAMERA_ZOOM = 1.5; // crop some empty headroom while keeping the floor + characters + lit wall in frame
+const CAMERA_FOLLOW_OFFSET_Y = 0; // keep the avatar centred (the bottom world-bound already frames the floor)
 
 // ── Platformer feel (all COSMETIC — never read by logic) ──
 const GRAVITY_Y = 900; // px/s²
@@ -92,6 +113,7 @@ const DOOR_H = 30;
 const DEPTH_BACKDROP = -10;
 const DEPTH_GROUND = 0;
 const DEPTH_PLATFORM = 1;
+const DEPTH_PROP = 2; // cosmetic decor — over the tiles, behind the NPC/item glyphs
 const DEPTH_GLYPH = 4;
 const DEPTH_NPC = 5;
 const DEPTH_AVATAR = 6;
@@ -152,6 +174,8 @@ class WorldScene extends Phaser.Scene {
   private currentHit: InteractHit | null = null;
   /** camera-pinned proximity prompt — persists across room rebuilds. */
   private promptLabel?: Phaser.GameObjects.Text;
+  /** camera-pinned, transient "Locked" cue flashed when the player tries a gated door. */
+  private lockedCue?: Phaser.GameObjects.Text;
   /** on-screen touch state (mobile); merged with the keyboard each frame. */
   private readonly touch = { left: false, right: false, jumpQueued: false };
 
@@ -224,6 +248,20 @@ class WorldScene extends Phaser.Scene {
       }
     } catch {
       /* loader/art unavailable — terrain falls back to colored blocks */
+    }
+    try {
+      // Side-view PROP images referenced by any authored room map (cosmetic decor).
+      const propIds = new Set<string>();
+      for (const spec of Object.values(ZONE_MAPS)) {
+        for (const m of spec.markers) if (m.kind === "prop" && m.propId) propIds.add(m.propId);
+      }
+      for (const id of propIds) {
+        const key = mapPropKey(id);
+        const url = mapPropUrl(id);
+        if (url && !this.textures.exists(key)) this.load.image(key, url);
+      }
+    } catch {
+      /* loader/art unavailable — props simply don't render */
     }
     try {
       this.load.once(Phaser.Loader.Events.FILE_LOAD_ERROR, () => {
@@ -337,9 +375,22 @@ class WorldScene extends Phaser.Scene {
   }
 
   private promptText(hit: InteractHit): string {
-    if (hit.kind === "door") return `[E] Enter ${this.zoneName(hit.toZone)}`;
+    if (hit.kind === "door") {
+      // A locked door reads "[E] Locked" — the server stays authoritative on reachability.
+      return this.isLockedDoor(hit.toZone) ? "[E] Locked" : `[E] Enter ${this.zoneName(hit.toZone)}`;
+    }
     if (hit.kind === "npc") return `[E] Talk to ${this.npcName(hit.id)}`;
     return "[E] Examine";
+  }
+
+  /** The Door leaving the active room toward `toZone`, if any (from === active room). */
+  private doorTo(toZone: string | undefined): Door | undefined {
+    return doorsFromRoom(this.view.map.doors, this.activeZone ?? "").find((d) => d.to === toZone);
+  }
+
+  /** A door is "locked" iff it carries a server-authoritative `unlockedBy` precondition. */
+  private isLockedDoor(toZone: string | undefined): boolean {
+    return this.doorTo(toZone)?.unlockedBy !== undefined;
   }
 
   private zoneName(zoneId: string | undefined): string {
@@ -362,8 +413,39 @@ class WorldScene extends Phaser.Scene {
       this.handlers.onExamineItem(hit.id);
       return;
     }
-    const door = doorsFromRoom(this.view.map.doors, this.activeZone ?? "").find((d) => d.to === hit.toZone);
-    if (door) this.enterDoor(door);
+    const door = this.doorTo(hit.toZone);
+    if (door) this.attemptDoor(door);
+  }
+
+  /**
+   * Player-initiated door use (E key, ▲/E touch, or a glyph tap). A locked door (one with
+   * an `unlockedBy` precondition) flashes a "Locked" cue and does NOT transition — the
+   * server remains authoritative on reachability. An unlocked door behaves exactly as before.
+   */
+  private attemptDoor(door: Door): void {
+    if (door.unlockedBy !== undefined) {
+      this.showLockedCue();
+      return;
+    }
+    this.enterDoor(door);
+  }
+
+  /** Flash a brief, camera-pinned "Locked" cue + a small thunk-shake. Cosmetic; no transition. */
+  private showLockedCue(): void {
+    const cue = this.lockedCue;
+    if (cue) {
+      cue.setText("Locked").setVisible(true);
+      try {
+        this.time.delayedCall(900, () => cue.setVisible(false));
+      } catch {
+        /* no timer — the cue stays until the next one (harmless) */
+      }
+    }
+    try {
+      if (this.quality !== "low") this.cameras.main.shake(120, 0.004);
+    } catch {
+      /* shake unavailable */
+    }
   }
 
   // ── room building ───────────────────────────────────────────────────────
@@ -387,8 +469,10 @@ class WorldScene extends Phaser.Scene {
       /* physics unavailable — colliders simply won't engage */
     }
 
-    this.drawBackdrop(level.worldW, level.worldH, zone?.name ?? zoneId);
+    const mood = this.zoneMood(zoneId);
+    this.drawBackdrop(level.worldW, level.worldH, zone?.name ?? zoneId, mood);
     this.buildTerrain(level, zoneId);
+    for (const pr of level.props) this.placeProp(pr);
     for (const p of level.placements) this.placeGlyph(p);
     this.candidates = level.placements.map((p) =>
       p.toZone !== undefined
@@ -411,11 +495,25 @@ class WorldScene extends Phaser.Scene {
     this.seatAvatar(level.spawnX, level.spawnY);
 
     try {
-      this.fx.setZoneLighting(this, zoneId);
+      this.fx.setZoneLighting(this, zoneId, FX_MOOD_KEY[mood]);
     } catch {
       /* unlit fallback */
     }
     this.updateAmbience(zoneId);
+  }
+
+  /**
+   * Canonical mood for a zone: the case's `Zone.mood` (warm/cold/dim), normalised, else
+   * derived from the zone id. Cosmetic only — drives the backdrop tint + the gaslight key.
+   * NOTE "backbar" is tested before "bar" so the dim staff room wins the substring race.
+   */
+  private zoneMood(zoneId: string | null): ZoneMood {
+    const raw = (this.view.map.zones.find((z) => z.id === zoneId)?.mood ?? "").toLowerCase();
+    if (raw === "warm" || raw === "cold" || raw === "dim") return raw;
+    const z = (zoneId ?? "").toLowerCase();
+    if (z.includes("backbar")) return "dim";
+    if (z.includes("bar") || z.includes("kitchen") || z.includes("vip")) return "warm";
+    return "cold"; // lot / alley / outside / coatcheck / default
   }
 
   /**
@@ -457,6 +555,7 @@ class WorldScene extends Phaser.Scene {
       spawnX,
       spawnY: layout.groundY,
       placements: layout.placements,
+      props: [],
     };
   }
 
@@ -469,19 +568,24 @@ class WorldScene extends Phaser.Scene {
     this.staticBlocks = [];
   }
 
-  /** Cold side-scroll backdrop: a vertical gradient wall + a room-name label. Cosmetic. */
-  private drawBackdrop(worldW: number, worldH: number, zoneName: string): void {
+  /**
+   * Per-mood side-scroll backdrop: a vertical gradient wall (warm amber for the bar, cold
+   * blue-grey for the lot/alley, dim near-black behind the bar) + a room-name label. The
+   * gradient endpoints come from BACKDROP_MOODS keyed off the active zone's mood. Cosmetic.
+   */
+  private drawBackdrop(worldW: number, worldH: number, zoneName: string, mood: ZoneMood): void {
     let g: Phaser.GameObjects.Graphics;
     try {
       g = this.add.graphics().setDepth(DEPTH_BACKDROP);
     } catch {
       return; // camera bg is the final fallback
     }
+    const ramp = BACKDROP_MOODS[mood] ?? { top: COL_BACKDROP_TOP, bot: COL_BACKDROP_BOT };
     const bands = 10;
     for (let i = 0; i < bands; i++) {
       const col = Phaser.Display.Color.Interpolate.ColorWithColor(
-        Phaser.Display.Color.ValueToColor(COL_BACKDROP_TOP),
-        Phaser.Display.Color.ValueToColor(COL_BACKDROP_BOT),
+        Phaser.Display.Color.ValueToColor(ramp.top),
+        Phaser.Display.Color.ValueToColor(ramp.bot),
         bands - 1,
         i,
       );
@@ -612,6 +716,18 @@ class WorldScene extends Phaser.Scene {
 
   // ── glyphs (NPC / item / door) ───────────────────────────────────────────
 
+  /** Draw a cosmetic side-view prop standing on its surface (decor; never a collider). */
+  private placeProp(prop: { id: string; x: number; surfaceY: number }): void {
+    const key = mapPropKey(prop.id);
+    if (!this.textures.exists(key)) return; // art absent → no decor (graceful)
+    try {
+      const img = this.add.image(prop.x, prop.surfaceY, key).setOrigin(0.5, 1).setDepth(DEPTH_PROP);
+      this.roomObjects.push(img);
+    } catch {
+      /* render unavailable */
+    }
+  }
+
   private placeGlyph(p: Placement): void {
     if (p.kind === "npc") this.placeNpc(p);
     else if (p.kind === "item") this.placeItem(p);
@@ -655,21 +771,22 @@ class WorldScene extends Phaser.Scene {
 
   /** Place a door glyph standing on the ground; tap (or, later, walk-up) transitions rooms. */
   private placeDoor(p: Placement): void {
-    const glyph = this.add
-      .rectangle(p.x, p.surfaceY, DOOR_W, DOOR_H, COL_DOOR, 1)
-      .setOrigin(0.5, 1)
-      .setStrokeStyle(2, COL_DOOR_STROKE, 1)
-      .setDepth(DEPTH_GLYPH);
     const door = this.doorForPlacement(p);
+    const locked = door?.unlockedBy !== undefined; // server-authoritative gate → "locked" skin
+    const glyph = this.add
+      .rectangle(p.x, p.surfaceY, DOOR_W, DOOR_H, locked ? COL_DOOR_LOCKED : COL_DOOR, 1)
+      .setOrigin(0.5, 1)
+      .setStrokeStyle(2, locked ? COL_DOOR_LOCKED_STROKE : COL_DOOR_STROKE, 1)
+      .setDepth(DEPTH_GLYPH);
     this.makeTappable(glyph, () => {
-      if (door) this.enterDoor(door);
+      if (door) this.attemptDoor(door);
     });
     this.roomObjects.push(glyph);
   }
 
   /** Resolve the Door object behind a door placement (from === active room, to === toZone). */
   private doorForPlacement(p: Placement): Door | undefined {
-    return doorsFromRoom(this.view.map.doors, this.activeZone ?? "").find((d) => d.to === p.toZone);
+    return this.doorTo(p.toZone);
   }
 
   private makeTappable(obj: Phaser.GameObjects.GameObject, fn: () => void): void {
@@ -699,6 +816,13 @@ class WorldScene extends Phaser.Scene {
     this.buildAvatarArt();
     try {
       this.cameras.main.startFollow(this.avatarBody, true, 0.12, 0.12);
+      // Crop the dead headroom: the action band sits in the world's bottom ~11 rows, so
+      // zoom in until the floor + platforms fill the viewport. Set ONCE — the camera object
+      // persists across room rebuilds (buildRoom only re-sets bounds, which never touches
+      // zoom/offset). A positive follow-offset pushes the avatar into the lower third so the
+      // ground stays visible and there's headroom above for jumps.
+      this.cameras.main.setZoom(CAMERA_ZOOM);
+      this.cameras.main.setFollowOffset(0, CAMERA_FOLLOW_OFFSET_Y);
     } catch {
       /* camera follow unavailable */
     }
@@ -935,6 +1059,24 @@ class WorldScene extends Phaser.Scene {
         .setVisible(false);
     } catch {
       /* text unavailable — proximity still works, just without the on-screen hint */
+    }
+
+    // Transient "Locked" banner — hidden until a gated door is tried (showLockedCue).
+    try {
+      this.lockedCue = this.add
+        .text(this.scale.width / 2, this.scale.height / 2 - 40, "", {
+          fontFamily: "monospace",
+          fontSize: "14px",
+          color: "#e8b86d",
+          backgroundColor: "rgba(40,18,18,0.82)",
+          padding: { x: 8, y: 4 },
+        })
+        .setOrigin(0.5, 0.5)
+        .setScrollFactor(0)
+        .setDepth(DEPTH_UI + 2)
+        .setVisible(false);
+    } catch {
+      /* text unavailable — the locked door still simply won't transition */
     }
 
     // On-screen controls (mobile-first; harmless alongside the keyboard on desktop).
