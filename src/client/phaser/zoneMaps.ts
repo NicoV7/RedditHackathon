@@ -44,6 +44,11 @@ export const ZONE_MAPS: Record<string, ZoneMapSpec> = {
       { kind: "npc", col: 41, row: 19 }, // the piano man, on the stage
       { kind: "item", col: 14, row: 19 }, // a glass on the bar
       { kind: "item", col: 24, row: 21 },
+      // cosmetic props (decor, not colliders)
+      { kind: "prop", col: 20, row: 19, propId: "bar-counter" }, // along the counter (row 20)
+      { kind: "prop", col: 14, row: 13, propId: "bottle-shelf" }, // on the bottle shelf (row 14)
+      { kind: "prop", col: 39, row: 19, propId: "piano" }, // on the piano stage (row 20)
+      { kind: "prop", col: 30, row: 16, propId: "gas-lamp" }, // over the centre doorway
     ],
   },
   // The Parking Lot — flat asphalt, a parked sedan, a crate stack.
@@ -63,6 +68,9 @@ export const ZONE_MAPS: Record<string, ZoneMapSpec> = {
       { kind: "npc", col: 40, row: 21 },
       { kind: "item", col: 31, row: 18 }, // atop the crates
       { kind: "item", col: 9, row: 19 }, // on the car roof
+      // cosmetic props (decor, not colliders)
+      { kind: "prop", col: 8, row: 19, propId: "sedan" }, // on the sedan roof (row 20)
+      { kind: "prop", col: 32, row: 18, propId: "crates" }, // atop the crate stack (row 19)
     ],
   },
   // Behind the Bar — back-room storage: shelves, casks, a bookkeeper's desk.
@@ -82,6 +90,9 @@ export const ZONE_MAPS: Record<string, ZoneMapSpec> = {
       { kind: "npc", col: 24, row: 21 },
       { kind: "item", col: 6, row: 16 }, // on the low shelf
       { kind: "item", col: 36, row: 17 }, // on the long shelf
+      // cosmetic props (decor, not colliders)
+      { kind: "prop", col: 13, row: 19, propId: "casks" }, // on the oak casks (row 20)
+      { kind: "prop", col: 22, row: 21, propId: "ledger-desk" }, // on the ground, by the bookkeeper
     ],
   },
   // The Back Alley — wet cobbles, a dumpster, an iron fire escape.
@@ -100,6 +111,9 @@ export const ZONE_MAPS: Record<string, ZoneMapSpec> = {
       { kind: "door", col: 22, row: 21 },
       { kind: "npc", col: 20, row: 21 },
       { kind: "item", col: 11, row: 18 }, // atop the dumpster
+      // cosmetic props (decor, not colliders)
+      { kind: "prop", col: 10, row: 18, propId: "dumpster" }, // on the dumpster lid (row 19)
+      { kind: "prop", col: 18, row: 21, propId: "trash-can" }, // on the ground
     ],
   },
 };
